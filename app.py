@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from assistant import ITQueryService
 from backend import (
-    AppSettings, ModelRouter, QueryDatabase, configure_logging, log_event,
+    AppSettings, ModelGateway, ModelGatewayError, ModelRouter, QueryDatabase, configure_logging, log_event,
     request_id_context,
 )
 
@@ -26,7 +26,7 @@ class QueryReq(BaseModel):
     question: str = ""
 
 
-def create_app(settings: AppSettings | None = None) -> FastAPI:
+def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway | None = None) -> FastAPI:
     config = settings or AppSettings.from_environment()
     configure_logging(config)
     database = QueryDatabase(
@@ -44,8 +44,19 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         cloud_model=config.cloud_model,
         builtin_model=config.builtin_model,
         configured_credentials=config.configured_credentials,
+        credentials={name: config.credential_value(name) for name in config.configured_credentials},
+        cloud_base_url=config.cloud_base_url,
+        local_base_url=config.local_base_url,
+        custom_base_url=config.custom_base_url,
     )
-    service = ITQueryService(str(config.knowledge_path), database, models)
+    gateway = model_gateway or ModelGateway(
+        timeout_seconds=config.model_timeout_seconds,
+        max_retries=config.model_max_retries,
+        retry_backoff_seconds=config.model_retry_backoff_seconds,
+        max_output_tokens=config.model_max_output_tokens,
+        temperature=config.model_temperature,
+    )
+    service = ITQueryService(str(config.knowledge_path), database, models, gateway)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
@@ -63,6 +74,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     application.state.settings = config
     application.state.database = database
     application.state.models = models
+    application.state.gateway = gateway
     application.state.service = service
 
     @application.middleware("http")
@@ -122,11 +134,13 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         )
 
     @application.post("/api/query")
-    async def query(req: QueryReq):
+    def query(req: QueryReq):
         try:
             return {"ok": True, **service.query(req.session_id, req.question)}
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except ModelGatewayError:
+            return JSONResponse({"ok": False, "error": "模型服务暂时不可用，请稍后重试"}, status_code=502)
 
     @application.get("/api/history")
     async def history(session_id: str = "default", limit: int = 20):
@@ -135,6 +149,14 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
     @application.get("/api/runtime/model")
     async def model_status():
         return {"ok": True, **models.status()}
+
+    @application.get("/api/usage/summary")
+    async def usage_summary(session_id: str = "default"):
+        return {"ok": True, **database.usage_summary(session_id)}
+
+    @application.get("/api/usage/ledger")
+    async def usage_ledger(session_id: str = "default", limit: int = 50):
+        return {"ok": True, "items": database.usage_ledger(session_id, limit)}
 
     return application
 

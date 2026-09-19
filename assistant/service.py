@@ -1,17 +1,26 @@
 """Read-only IT knowledge query service."""
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
-from backend import ModelRouter, QueryDatabase
+from backend import (
+    ModelGateway, ModelGatewayError, ModelRouter, QueryDatabase, log_event,
+    request_id_context,
+)
+
+
+LOGGER = logging.getLogger("docmind.it.model")
 
 
 class ITQueryService:
-    def __init__(self, knowledge_path: str, database: QueryDatabase, models: ModelRouter):
+    def __init__(self, knowledge_path: str, database: QueryDatabase, models: ModelRouter,
+                 gateway: ModelGateway | None = None):
         self.knowledge_path = Path(knowledge_path)
         self.database = database
         self.models = models
+        self.gateway = gateway
 
     @staticmethod
     def _terms(text: str) -> set[str]:
@@ -61,6 +70,36 @@ class ITQueryService:
             citations = []
         model = self.models.select(question, evidence)
         query_id = self.database.record(session_id, question, evidence, model["route"])
+        usage = None
+        if model["route"] in {"local", "cloud"}:
+            if self.gateway is None:
+                raise ModelGatewayError("model_gateway_unavailable", [])
+            try:
+                result = self.gateway.complete(
+                    route=model,
+                    base_url=self.models.base_url(model),
+                    api_key=self.models.credential(model["provider"]),
+                    question=question,
+                    request_id=request_id_context.get(),
+                )
+            except ModelGatewayError as exc:
+                self.database.record_model_attempts(
+                    query_id, request_id_context.get(), model, exc.attempts,
+                )
+                log_event(
+                    LOGGER, logging.WARNING, "model_call_failed",
+                    provider=model["provider"], model=model["model"], reason=exc.code,
+                )
+                raise
+            self.database.record_model_attempts(
+                query_id, request_id_context.get(), model, result.attempts,
+            )
+            answer = result.content
+            usage = self.gateway.public_usage(model, result.attempts[-1])
+            log_event(
+                LOGGER, logging.INFO, "model_call_succeeded",
+                provider=model["provider"], model=model["model"],
+                duration_ms=result.attempts[-1].latency_ms,
+            )
         return {"query_id": query_id, "answer": answer, "citations": citations,
-                "evidence": evidence, "model": model}
-
+                "evidence": evidence, "model": model, "usage": usage}

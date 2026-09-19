@@ -23,6 +23,17 @@ Copy-Item .env.example .env
 
 每个响应均带 `X-Request-ID`。应用日志默认输出 JSON，只记录请求方法、路径、状态和耗时，不记录问题正文、回答正文、查询参数、会话 ID、客户端地址或密钥。
 
+## 真实模型网关与费用账本
+
+当知识资料不足且 `IT_MODEL_MODE=local|cloud` 时，服务会调用所选供应商的 OpenAI 兼容 `/chat/completions` 接口。云端密钥只从进程环境或未提交的 `.env` 读取；可通过 `IT_CLOUD_BASE_URL`、`IT_LOCAL_BASE_URL` 或 `IT_CUSTOM_BASE_URL` 覆盖地址。
+
+网关配置包括超时、最多重试次数、最大输出 Token 和温度。供应商返回的权威 usage 会逐次写入 `model_usage_ledger`，包括失败重试、延迟、供应商请求 ID、当时单价和费用快照，但不保存问题/回答正文、密钥或供应商错误正文。价格未知时费用为 `null`，不会误显示为免费。
+
+- `GET /api/usage/summary?session_id=...`：本会话 Token 与费用汇总。
+- `GET /api/usage/ledger?session_id=...`：本会话逐次模型调用账本。
+
+查询页面右侧显示本会话的调用次数、Token 和费用。内置知识回答不调用模型，因此不会产生模型 Token 账目。
+
 ## PostgreSQL 与迁移
 
 生产环境强制使用 `IT_DATABASE_URL=postgresql+psycopg://...`，连接串不会出现在状态接口或日志。应用不会在 PostgreSQL 中自动建表，部署前必须执行：
@@ -43,6 +54,7 @@ Copy-Item .env.example .env
 - `backend/config.py`：强类型配置、`.env` 加载和启动校验。
 - `backend/logging_config.py`：带请求 ID 的结构化日志。
 - `backend/models.py`：统一模型路由；默认使用确定性知识回答，可通过环境变量配置本地或云端模型画像。
+- `backend/model_gateway.py`：真实模型调用、有限重试和权威 usage 提取。
 - `backend/providers.py`：从开发项目隔离出的模型供应商目录与上下文能力，不依赖 Agent 或开发工具。
 - `backend/pricing.py`：独立 Token 单价与费用计算；本地模型默认费用为零。
 - 不包含开发问答、项目文件访问、Shell、Git 或游戏工具。

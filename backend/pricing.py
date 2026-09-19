@@ -47,9 +47,11 @@ def cost_cny(provider: str, model: str, prompt_tokens: int, completion_tokens: i
 
 def pricing_status(provider: str, model: str) -> dict:
     input_price, output_price = price_for(provider, model)
+    config = DEFAULT_PRICING.get((provider or "").strip().lower())
     return {
         "currency": "CNY",
         "unit_tokens": 1_000_000,
         "input": input_price,
         "output": output_price,
+        "known": config is not None,
     }

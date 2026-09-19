@@ -45,6 +45,7 @@ class ConfigurationTests(unittest.TestCase):
             (project / ".env").write_text("DASHSCOPE_API_KEY=private-value\n", encoding="utf-8")
             settings = AppSettings.from_environment(project)
         self.assertTrue(settings.credential_is_configured("DASHSCOPE_API_KEY"))
+        self.assertEqual(settings.credential_value("DASHSCOPE_API_KEY"), "private-value")
         self.assertNotIn("private-value", repr(settings))
         self.assertNotIn("configured_credentials", settings.public())
 

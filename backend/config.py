@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from .providers import PROVIDERS
 
@@ -74,11 +74,20 @@ class AppSettings(BaseModel):
     cloud_provider: str = "qwen"
     cloud_model: str = ""
     builtin_model: str = "deterministic"
+    cloud_base_url: str = ""
+    local_base_url: str = ""
+    custom_base_url: str = ""
+    model_timeout_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
+    model_max_retries: int = Field(default=1, ge=0, le=3)
+    model_retry_backoff_seconds: float = Field(default=0.25, ge=0.0, le=10.0)
+    model_max_output_tokens: int = Field(default=512, ge=1, le=32768)
+    model_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = True
     configured_credentials: frozenset[str] = Field(
         default_factory=frozenset, exclude=True, repr=False,
     )
+    credentials: dict[str, SecretStr] = Field(default_factory=dict, exclude=True, repr=False)
 
     @field_validator("port")
     @classmethod
@@ -115,8 +124,8 @@ class AppSettings(BaseModel):
             value = Path(read(name, str(default))).expanduser()
             return value.resolve() if value.is_absolute() else (root / value).resolve()
 
-        credential_names = {
-            provider.api_key_env
+        credential_values = {
+            provider.api_key_env: SecretStr(read(provider.api_key_env, "").strip())
             for provider in PROVIDERS.values()
             if provider.api_key_env and read(provider.api_key_env, "").strip()
         }
@@ -143,14 +152,27 @@ class AppSettings(BaseModel):
             cloud_provider=read("IT_CLOUD_PROVIDER", "qwen").strip().lower(),
             cloud_model=read("IT_CLOUD_MODEL", "").strip(),
             builtin_model=read("IT_BUILTIN_MODEL", "deterministic").strip(),
+            cloud_base_url=read("IT_CLOUD_BASE_URL", "").strip(),
+            local_base_url=read("IT_LOCAL_BASE_URL", "").strip(),
+            custom_base_url=read("IT_CUSTOM_BASE_URL", "").strip(),
+            model_timeout_seconds=float(read("IT_MODEL_TIMEOUT_SECONDS", "30")),
+            model_max_retries=int(read("IT_MODEL_MAX_RETRIES", "1")),
+            model_retry_backoff_seconds=float(read("IT_MODEL_RETRY_BACKOFF_SECONDS", "0.25")),
+            model_max_output_tokens=int(read("IT_MODEL_MAX_OUTPUT_TOKENS", "512")),
+            model_temperature=float(read("IT_MODEL_TEMPERATURE", "0.1")),
             log_level=read("IT_LOG_LEVEL", "INFO").strip().upper(),
             log_json=_bool(read("IT_LOG_JSON", "true")),
-            configured_credentials=frozenset(credential_names),
+            configured_credentials=frozenset(credential_values),
+            credentials=credential_values,
         )
 
     def credential_is_configured(self, name: str) -> bool:
         """Return credential presence without retaining or exposing its value."""
         return bool(name and name in self.configured_credentials)
+
+    def credential_value(self, name: str) -> str:
+        value = self.credentials.get(name)
+        return value.get_secret_value() if value else ""
 
     def public(self) -> dict:
         """Safe status view. Secret values are deliberately absent from this model."""

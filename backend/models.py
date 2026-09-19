@@ -11,7 +11,9 @@ class ModelRouter:
     def __init__(self, mode: str | None = None, *, local_provider: str | None = None,
                  local_model: str | None = None, cloud_provider: str | None = None,
                  cloud_model: str | None = None, builtin_model: str | None = None,
-                 configured_credentials: frozenset[str] | None = None):
+                 configured_credentials: frozenset[str] | None = None,
+                 credentials: dict[str, str] | None = None,
+                 cloud_base_url: str = "", local_base_url: str = "", custom_base_url: str = ""):
         self.mode = (mode or os.getenv("IT_MODEL_MODE") or "knowledge").strip().lower()
         if self.mode not in {"knowledge", "cloud", "local"}:
             raise ValueError(f"不支持的模型模式：{self.mode}")
@@ -21,6 +23,10 @@ class ModelRouter:
         self.cloud_model = (cloud_model if cloud_model is not None else os.getenv("IT_CLOUD_MODEL", "")).strip()
         self.builtin_model = (builtin_model or os.getenv("IT_BUILTIN_MODEL") or "deterministic").strip()
         self.configured_credentials = configured_credentials
+        self.credentials = credentials or {}
+        self.cloud_base_url = cloud_base_url.strip()
+        self.local_base_url = local_base_url.strip()
+        self.custom_base_url = custom_base_url.strip()
 
     def _route(self, route: str, provider_key: str, configured_model: str) -> dict:
         provider = get_provider(provider_key)
@@ -78,4 +84,23 @@ class ModelRouter:
             return False, "invalid_model_configuration"
         if status["cloud"] and not status["api_key_configured"]:
             return False, "model_api_key_missing"
+        if status["provider"] == "custom" and not self.custom_base_url:
+            return False, "model_base_url_missing"
         return True, "ok"
+
+    def credential(self, provider_key: str) -> str:
+        provider = get_provider(provider_key)
+        return (
+            self.credentials.get(provider.api_key_env, "") or os.getenv(provider.api_key_env, "")
+            if provider.api_key_env else ""
+        )
+
+    def base_url(self, route: dict) -> str:
+        provider = get_provider(route["provider"])
+        if provider.key == "custom":
+            return self.custom_base_url
+        if route["route"] == "cloud" and self.cloud_base_url:
+            return self.cloud_base_url
+        if route["route"] == "local" and self.local_base_url:
+            return self.local_base_url
+        return provider.base_url

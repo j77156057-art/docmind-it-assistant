@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, select, text
+from decimal import Decimal
+
+from sqlalchemy import case, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from .db_models import Base, QueryRecord
+from .db_models import Base, ModelUsageRecord, QueryRecord
+from .pricing import cost_cny, pricing_status
 
 
 def _database_url(value: str) -> str:
@@ -51,7 +54,9 @@ class QueryDatabase:
     def initialize(self) -> None:
         """Create only disposable SQLite schemas; PostgreSQL uses Alembic exclusively."""
         if self.backend == "sqlite":
-            Base.metadata.create_all(self.engine)
+            inspector = inspect(self.engine)
+            if not inspector.has_table("alembic_version"):
+                Base.metadata.create_all(self.engine)
 
     def dispose(self) -> None:
         self.engine.dispose()
@@ -60,7 +65,8 @@ class QueryDatabase:
         try:
             with self.engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
-            if not inspect(self.engine).has_table(QueryRecord.__tablename__):
+            tables = set(inspect(self.engine).get_table_names())
+            if QueryRecord.__tablename__ not in tables or ModelUsageRecord.__tablename__ not in tables:
                 return False, "database_schema_missing"
             return True, "ok"
         except (OSError, SQLAlchemyError):
@@ -99,3 +105,115 @@ class QueryDatabase:
             }
             for row in rows
         ]
+
+    def record_model_attempts(self, query_id: int, request_id: str, route: dict, attempts) -> None:
+        pricing = pricing_status(route["provider"], route["model"])
+        input_price = Decimal(str(pricing["input"])) if pricing["known"] else None
+        output_price = Decimal(str(pricing["output"])) if pricing["known"] else None
+        rows = []
+        for attempt in attempts:
+            charge = None
+            if attempt.usage_reported and pricing["known"]:
+                charge = Decimal(str(cost_cny(
+                    route["provider"], route["model"],
+                    attempt.prompt_tokens or 0, attempt.completion_tokens or 0,
+                )))
+            rows.append(ModelUsageRecord(
+                query_id=query_id,
+                request_id=request_id[:128],
+                provider=route["provider"],
+                model=route["model"][:128],
+                route=route["route"],
+                attempt=attempt.attempt,
+                status=attempt.status,
+                prompt_tokens=attempt.prompt_tokens,
+                completion_tokens=attempt.completion_tokens,
+                total_tokens=attempt.total_tokens,
+                usage_reported=attempt.usage_reported,
+                input_price_cny=input_price,
+                output_price_cny=output_price,
+                cost_cny=charge,
+                provider_request_id=attempt.provider_request_id or None,
+                latency_ms=attempt.latency_ms,
+                error_code=attempt.error_code,
+            ))
+        if rows:
+            with self._sessions.begin() as session:
+                session.add_all(rows)
+
+    def usage_ledger(self, session_id: str, limit: int = 50) -> list[dict]:
+        count = max(1, min(int(limit), 100))
+        statement = (
+            select(ModelUsageRecord)
+            .join(QueryRecord, QueryRecord.id == ModelUsageRecord.query_id)
+            .where(QueryRecord.session_id == str(session_id or "default")[:128])
+            .order_by(ModelUsageRecord.id.desc())
+            .limit(count)
+        )
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._usage_public(row) for row in rows]
+
+    def usage_summary(self, session_id: str) -> dict:
+        statement = (
+            select(
+                func.count(ModelUsageRecord.id),
+                func.sum(case((ModelUsageRecord.status == "succeeded", 1), else_=0)),
+                func.coalesce(func.sum(ModelUsageRecord.prompt_tokens), 0),
+                func.coalesce(func.sum(ModelUsageRecord.completion_tokens), 0),
+                func.coalesce(func.sum(ModelUsageRecord.total_tokens), 0),
+                func.coalesce(func.sum(ModelUsageRecord.cost_cny), 0),
+                func.sum(case((
+                    (ModelUsageRecord.status == "succeeded")
+                    & ModelUsageRecord.usage_reported
+                    & (ModelUsageRecord.cost_cny.is_(None)), 1
+                ), else_=0)),
+                func.sum(case((
+                    (ModelUsageRecord.status == "succeeded")
+                    & (ModelUsageRecord.usage_reported.is_(False)), 1
+                ), else_=0)),
+            )
+            .join(QueryRecord, QueryRecord.id == ModelUsageRecord.query_id)
+            .where(QueryRecord.session_id == str(session_id or "default")[:128])
+        )
+        with self._sessions() as session:
+            row = session.execute(statement).one()
+        return {
+            "attempts": int(row[0] or 0),
+            "successful_calls": int(row[1] or 0),
+            "prompt_tokens": int(row[2] or 0),
+            "completion_tokens": int(row[3] or 0),
+            "total_tokens": int(row[4] or 0),
+            "cost_cny": float(row[5] or 0),
+            "unpriced_calls": int(row[6] or 0),
+            "unmetered_calls": int(row[7] or 0),
+            "currency": "CNY",
+        }
+
+    @staticmethod
+    def _usage_public(row: ModelUsageRecord) -> dict:
+        return {
+            "id": row.id,
+            "query_id": row.query_id,
+            "request_id": row.request_id,
+            "provider": row.provider,
+            "model": row.model,
+            "route": row.route,
+            "attempt": row.attempt,
+            "status": row.status,
+            "prompt_tokens": row.prompt_tokens,
+            "completion_tokens": row.completion_tokens,
+            "total_tokens": row.total_tokens,
+            "usage_reported": row.usage_reported,
+            "cost_cny": float(row.cost_cny) if row.cost_cny is not None else None,
+            "input_price_cny_per_million": (
+                float(row.input_price_cny) if row.input_price_cny is not None else None
+            ),
+            "output_price_cny_per_million": (
+                float(row.output_price_cny) if row.output_price_cny is not None else None
+            ),
+            "provider_request_id": row.provider_request_id,
+            "latency_ms": row.latency_ms,
+            "error_code": row.error_code,
+            "created_at": row.created_at.isoformat(),
+        }

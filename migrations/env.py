@@ -46,7 +46,23 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+        def include_object(object_, _name, type_, reflected, _compare_to):
+            # The pre-Alembic demo SQLite table used loose TEXT declarations.
+            # Preserve that local data without weakening PostgreSQL schema checks.
+            if (
+                connection.dialect.name == "sqlite"
+                and type_ == "column"
+                and getattr(getattr(object_, "table", None), "name", "") == "queries"
+            ):
+                return False
+            return True
+
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            include_object=include_object,
+        )
         with context.begin_transaction():
             context.run_migrations()
 
