@@ -17,5 +17,17 @@ python -m venv .venv
 - `assistant/`：只读知识检索。
 - `backend/database.py`：SQLite 查询记录传输与会话隔离。
 - `backend/models.py`：统一模型路由；默认使用确定性知识回答，可通过环境变量配置本地或云端模型画像。
+- `backend/providers.py`：从开发项目隔离出的模型供应商目录与上下文能力，不依赖 Agent 或开发工具。
+- `backend/pricing.py`：独立 Token 单价与费用计算；本地模型默认费用为零。
 - 不包含开发问答、项目文件访问、Shell、Git 或游戏工具。
+- `tests/test_isolation_boundary.py`：自动阻止开发 Agent、工作台、Git/Shell 和进程执行依赖进入查询服务。
 
+## 模型环境变量
+
+- `IT_MODEL_MODE=knowledge|local|cloud`
+- `IT_LOCAL_PROVIDER=ollama|llamacpp`
+- `IT_LOCAL_MODEL=<model>`
+- `IT_CLOUD_PROVIDER=qwen|deepseek|kimi|zhipu|siliconflow|openai|custom`
+- `IT_CLOUD_MODEL=<model>`
+
+运行状态接口 `/api/runtime/model` 只返回模型名称、上下文窗口、计价信息与 Key 是否已配置，绝不返回 Key 原文。
