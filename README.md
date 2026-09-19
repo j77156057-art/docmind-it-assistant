@@ -31,3 +31,10 @@ python -m venv .venv
 - `IT_CLOUD_MODEL=<model>`
 
 运行状态接口 `/api/runtime/model` 只返回模型名称、上下文窗口、计价信息与 Key 是否已配置，绝不返回 Key 原文。
+
+## 项目文档
+
+- [`docs/enterprise-architecture.md`](docs/enterprise-architecture.md)：企业级目标架构、数据流和非功能指标。
+- [`docs/isolation-boundary.md`](docs/isolation-boundary.md)：与开发 Agent 的隔离规则、允许与禁止能力。
+- [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md)：分阶段实施表、验收条件和风险控制。
+- [`HANDOFF.md`](HANDOFF.md)：当前状态、验证基线和下一步交接事项。
