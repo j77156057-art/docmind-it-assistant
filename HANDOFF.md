@@ -20,6 +20,7 @@
 - 已完成企业架构、隔离边界和实施路线图文档。
 - 已创建项目独立 `.venv`，直接依赖固定版本，并提供完整 `requirements-lock.txt`。
 - 已实现强类型配置、`.env.example`、存活/就绪检查和隐私收敛的 JSON 日志。
+- 已引入 PostgreSQL、SQLAlchemy Repository 和 Alembic；生产环境禁止 SQLite 和自动建表。
 
 ## 当前接口
 
@@ -35,7 +36,7 @@
 ## 当前限制
 
 - 只支持本地 `knowledge.md`，尚未实现企业文档导入。
-- SQLite 仅适合本地演示，尚未迁移 PostgreSQL。
+- 当前首个迁移仅包含查询历史表，引用、用量和审计表仍待后续迁移。
 - 模型路由已具备元数据和计价，尚未执行真实模型调用。
 - 尚未接入企业 SSO、RBAC 和文档 ACL。
 - 前端尚未提供独立管理后台、反馈和引用详情面板。
@@ -46,7 +47,7 @@
 D:\WorkBuddy\docmind-it-assistant\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-当前基线：19 项测试通过，覆盖查询、路由、计价、隔离边界、配置校验、健康检查、请求 ID 和日志隐私。
+当前基线：23 项测试通过，覆盖查询、路由、计价、隔离边界、配置校验、健康检查、迁移升降级与漂移检查、请求 ID 和日志隐私。
 
 启动示例：
 
@@ -58,9 +59,8 @@ D:\WorkBuddy\docmind-it-assistant\.venv\Scripts\python.exe -B -m unittest discov
 
 按 `docs/implementation-roadmap.md` 从 P0 工程底座开始：
 
-1. 引入 PostgreSQL 与 Alembic；
-2. 建立查询、引用与模型用量数据表；
-3. 接入真实模型网关；
-4. 再接企业身份和文档导入链路。
+1. 建立引用、模型用量与审计数据表；
+2. 接入真实模型网关；
+3. 再接企业身份和文档导入链路。
 
 不要在当前演示结构上直接加入开发工具，也不要从 `rag-agent` 运行时导入模块。

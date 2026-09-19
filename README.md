@@ -8,6 +8,7 @@
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
+.venv\Scripts\python -m alembic upgrade head
 .venv\Scripts\python -m uvicorn app:app --host 127.0.0.1 --port 8020 --no-access-log
 ```
 
@@ -22,10 +23,23 @@ Copy-Item .env.example .env
 
 每个响应均带 `X-Request-ID`。应用日志默认输出 JSON，只记录请求方法、路径、状态和耗时，不记录问题正文、回答正文、查询参数、会话 ID、客户端地址或密钥。
 
+## PostgreSQL 与迁移
+
+生产环境强制使用 `IT_DATABASE_URL=postgresql+psycopg://...`，连接串不会出现在状态接口或日志。应用不会在 PostgreSQL 中自动建表，部署前必须执行：
+
+```powershell
+.venv\Scripts\python -m alembic upgrade head
+.venv\Scripts\python -m alembic current
+```
+
+本地没有现成 PostgreSQL 时，可先用 `docker compose up -d postgres` 启动项目自带的数据库服务。升级前应备份；降级命令与注意事项见 [`migrations/README.md`](migrations/README.md)。SQLite 仅保留给本地演示和自动化测试，生产配置会拒绝启动。
+
 ## 边界
 
 - `assistant/`：只读知识检索。
-- `backend/database.py`：SQLite 查询记录传输与会话隔离。
+- `backend/database.py`：SQLAlchemy Repository、连接池和数据库健康检查。
+- `backend/db_models.py`：与 Alembic 共用的数据模型元数据。
+- `migrations/`：可升级、可降级的数据库版本记录。
 - `backend/config.py`：强类型配置、`.env` 加载和启动校验。
 - `backend/logging_config.py`：带请求 ID 的结构化日志。
 - `backend/models.py`：统一模型路由；默认使用确定性知识回答，可通过环境变量配置本地或云端模型画像。

@@ -29,7 +29,13 @@ class QueryReq(BaseModel):
 def create_app(settings: AppSettings | None = None) -> FastAPI:
     config = settings or AppSettings.from_environment()
     configure_logging(config)
-    database = QueryDatabase(str(config.database_path))
+    database = QueryDatabase(
+        config.database_url,
+        pool_size=config.database_pool_size,
+        max_overflow=config.database_max_overflow,
+        pool_timeout=config.database_pool_timeout,
+        connect_timeout=config.database_connect_timeout,
+    )
     models = ModelRouter(
         config.model_mode,
         local_provider=config.local_provider,
@@ -50,6 +56,7 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
             environment=config.environment, provider=status["provider"], model=status["model"],
         )
         yield
+        database.dispose()
         log_event(LOGGER, logging.INFO, "application_stopped", environment=config.environment)
 
     application = FastAPI(title=config.app_name, lifespan=lifespan)

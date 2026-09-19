@@ -42,7 +42,7 @@ def configure_logging(settings: AppSettings) -> None:
         ))
     logging.basicConfig(level=getattr(logging, settings.log_level), handlers=[handler], force=True)
     logging.getLogger("uvicorn.access").disabled = True
-    for name in ("httpx", "httpcore"):
+    for name in ("httpx", "httpcore", "sqlalchemy", "alembic"):
         logging.getLogger(name).setLevel(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error"):
         logger = logging.getLogger(name)

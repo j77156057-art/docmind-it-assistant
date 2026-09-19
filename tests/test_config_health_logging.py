@@ -63,6 +63,7 @@ class HealthAndLoggingTests(unittest.TestCase):
             project_root=project,
             environment="test",
             database_path=project / "data" / "queries.db",
+            database_url=f"sqlite:///{(project / 'data' / 'queries.db').as_posix()}",
             knowledge_path=knowledge_path,
             web_index_path=web_path,
             log_level="CRITICAL",
