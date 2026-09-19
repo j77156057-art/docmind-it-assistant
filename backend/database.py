@@ -26,6 +26,14 @@ class QueryDatabase:
                     )
                 """)
 
+    def healthcheck(self) -> tuple[bool, str]:
+        try:
+            with closing(sqlite3.connect(self.path, timeout=2.0)) as db:
+                value = db.execute("SELECT 1").fetchone()
+            return (bool(value and value[0] == 1), "ok")
+        except (OSError, sqlite3.Error):
+            return False, "database_unavailable"
+
     def record(self, session_id: str, question: str, evidence: str, model_route: str) -> int:
         self.initialize()
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")

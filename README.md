@@ -6,16 +6,28 @@
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python -m uvicorn app:app --host 127.0.0.1 --port 8020
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env
+.venv\Scripts\python -m uvicorn app:app --host 127.0.0.1 --port 8020 --no-access-log
 ```
 
+`requirements.txt` / `requirements-dev.txt` 保存人工维护的直接依赖；需要严格复现已验证环境时，使用 `.venv\Scripts\python -m pip install -r requirements-lock.txt`。
+
 打开 `http://127.0.0.1:8020/`。
+
+健康检查：
+
+- `GET /health/live`：进程存活检查。
+- `GET /health/ready`：数据库、知识文件、网页资源和模型配置就绪检查。
+
+每个响应均带 `X-Request-ID`。应用日志默认输出 JSON，只记录请求方法、路径、状态和耗时，不记录问题正文、回答正文、查询参数、会话 ID、客户端地址或密钥。
 
 ## 边界
 
 - `assistant/`：只读知识检索。
 - `backend/database.py`：SQLite 查询记录传输与会话隔离。
+- `backend/config.py`：强类型配置、`.env` 加载和启动校验。
+- `backend/logging_config.py`：带请求 ID 的结构化日志。
 - `backend/models.py`：统一模型路由；默认使用确定性知识回答，可通过环境变量配置本地或云端模型画像。
 - `backend/providers.py`：从开发项目隔离出的模型供应商目录与上下文能力，不依赖 Agent 或开发工具。
 - `backend/pricing.py`：独立 Token 单价与费用计算；本地模型默认费用为零。

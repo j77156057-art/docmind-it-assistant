@@ -26,11 +26,10 @@ class ITAssistantTests(unittest.TestCase):
             self.assertFalse(hasattr(service, "run_command"))
 
     def test_http_query_and_model_status(self):
-        client = TestClient(app)
-        self.assertEqual(client.get("/api/runtime/model").status_code, 200)
-        self.assertEqual(client.post("/api/query", json={"question": ""}).status_code, 400)
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/api/runtime/model").status_code, 200)
+            self.assertEqual(client.post("/api/query", json={"question": ""}).status_code, 400)
 
 
 if __name__ == "__main__":
     unittest.main()
-

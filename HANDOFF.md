@@ -1,6 +1,6 @@
 # DocMind IT 查询助手交接文档
 
-更新日期：2026-09-19
+更新日期：2026-09-20
 
 ## 项目身份
 
@@ -18,6 +18,8 @@
 - 模型状态只返回 Key 是否已配置，不返回 Key 内容。
 - 已加入源码隔离测试，禁止引入开发 Agent、Shell、Git 和进程执行能力。
 - 已完成企业架构、隔离边界和实施路线图文档。
+- 已创建项目独立 `.venv`，直接依赖固定版本，并提供完整 `requirements-lock.txt`。
+- 已实现强类型配置、`.env.example`、存活/就绪检查和隐私收敛的 JSON 日志。
 
 ## 当前接口
 
@@ -27,6 +29,8 @@
 | POST | `/api/query` | 只读知识查询 |
 | GET | `/api/history` | 当前会话查询历史 |
 | GET | `/api/runtime/model` | 模型路由、上下文和计价状态 |
+| GET | `/health/live` | 进程存活检查 |
+| GET | `/health/ready` | 数据库、知识、网页和模型就绪检查 |
 
 ## 当前限制
 
@@ -39,24 +43,24 @@
 ## 验证基线
 
 ```powershell
-D:\WorkBuddy\rag-agent\.venv\Scripts\python.exe -B -m unittest discover -s tests
+D:\WorkBuddy\docmind-it-assistant\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-当前基线：8 项测试通过，包括查询、路由、计价和隔离边界。
+当前基线：19 项测试通过，覆盖查询、路由、计价、隔离边界、配置校验、健康检查、请求 ID 和日志隐私。
 
 启动示例：
 
 ```powershell
-python -m uvicorn app:app --host 127.0.0.1 --port 8020
+.venv\Scripts\python -m uvicorn app:app --host 127.0.0.1 --port 8020 --no-access-log
 ```
 
 ## 下一步
 
 按 `docs/implementation-roadmap.md` 从 P0 工程底座开始：
 
-1. 建立正式分层和配置对象；
-2. 添加健康检查、请求 ID 和结构化日志；
-3. 引入 PostgreSQL 与 Alembic；
+1. 引入 PostgreSQL 与 Alembic；
+2. 建立查询、引用与模型用量数据表；
+3. 接入真实模型网关；
 4. 再接企业身份和文档导入链路。
 
 不要在当前演示结构上直接加入开发工具，也不要从 `rag-agent` 运行时导入模块。
