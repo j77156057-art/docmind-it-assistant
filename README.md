@@ -1,6 +1,6 @@
 # DocMind IT 查询助手
 
-独立于开发 Agent 的只读 IT 查询项目。前台只提供知识查询；SQLite 数据传输与模型调配位于 `backend/`，不注册文件写入、命令执行或游戏开发工具。
+独立于开发 Agent 的只读 IT 查询项目。前台只提供知识查询；数据库、混合检索与模型调配位于 `backend/`，不注册文件写入、命令执行或游戏开发工具。文档导入通过独立后台命令完成，不暴露在查询 API。
 
 ## 启动
 
@@ -23,6 +23,19 @@ Copy-Item .env.example .env
 
 每个响应均带 `X-Request-ID`。应用日志默认输出 JSON，只记录请求方法、路径、状态和耗时，不记录问题正文、回答正文、查询参数、会话 ID、客户端地址或密钥。
 
+## 文档导入与混合检索
+
+支持 Markdown、TXT、PDF、DOCX。导入过程执行大小/页数/文本长度限制、SHA-256 去重、不可变版本、标题感知分块和向量化；新版本成功发布后旧版本自动标记为 `superseded`。普通查询 API 没有上传能力。
+
+```powershell
+.venv\Scripts\python -m ingestion.cli import D:\docs\vpn-manual.pdf --title "VPN 手册" --source-key "it/vpn-manual"
+.venv\Scripts\python -m ingestion.cli list
+```
+
+查询时使用全文 BM25 和向量余弦召回，再通过 RRF 融合排序；Embedding 服务失败时降级为全文检索。引用包含文档、版本、章节、页码或块编号。`IT_EMBEDDING_MODE=hash` 只用于本地开发，生产环境强制使用真实 `provider` 模式。
+
+详细配置、发布流程和恢复说明见 [`docs/document-ingestion.md`](docs/document-ingestion.md)。
+
 ## 真实模型网关与费用账本
 
 当知识资料不足且 `IT_MODEL_MODE=local|cloud` 时，服务会调用所选供应商的 OpenAI 兼容 `/chat/completions` 接口。云端密钥只从进程环境或未提交的 `.env` 读取；可通过 `IT_CLOUD_BASE_URL`、`IT_LOCAL_BASE_URL` 或 `IT_CUSTOM_BASE_URL` 覆盖地址。
@@ -43,7 +56,7 @@ Copy-Item .env.example .env
 .venv\Scripts\python -m alembic current
 ```
 
-本地没有现成 PostgreSQL 时，可先用 `docker compose up -d postgres` 启动项目自带的数据库服务。升级前应备份；降级命令与注意事项见 [`migrations/README.md`](migrations/README.md)。SQLite 仅保留给本地演示和自动化测试，生产配置会拒绝启动。
+本地没有现成 PostgreSQL 时，可先用 `docker compose up -d postgres` 启动带 pgvector 的数据库服务。托管 PostgreSQL 必须预先允许 `vector` 扩展。升级前应备份；降级命令与注意事项见 [`migrations/README.md`](migrations/README.md)。SQLite 仅保留给本地演示和自动化测试，生产配置会拒绝启动。
 
 ## 边界
 
@@ -55,6 +68,9 @@ Copy-Item .env.example .env
 - `backend/logging_config.py`：带请求 ID 的结构化日志。
 - `backend/models.py`：统一模型路由；默认使用确定性知识回答，可通过环境变量配置本地或云端模型画像。
 - `backend/model_gateway.py`：真实模型调用、有限重试和权威 usage 提取。
+- `backend/embeddings.py`：真实 Embeddings 接口与本地确定性测试向量。
+- `backend/retrieval.py`：全文、向量、RRF 融合与全文降级。
+- `ingestion/`：与查询 API 分离的解析、分块和版本化导入命令。
 - `backend/providers.py`：从开发项目隔离出的模型供应商目录与上下文能力，不依赖 Agent 或开发工具。
 - `backend/pricing.py`：独立 Token 单价与费用计算；本地模型默认费用为零。
 - 不包含开发问答、项目文件访问、Shell、Git 或游戏工具。

@@ -82,6 +82,19 @@ class AppSettings(BaseModel):
     model_retry_backoff_seconds: float = Field(default=0.25, ge=0.0, le=10.0)
     model_max_output_tokens: int = Field(default=512, ge=1, le=32768)
     model_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    embedding_mode: Literal["hash", "provider"] = "hash"
+    embedding_provider: str = "qwen"
+    embedding_model: str = "text-embedding-v3"
+    embedding_base_url: str = ""
+    embedding_dimension: int = 1024
+    embedding_timeout_seconds: float = Field(default=60.0, ge=1.0, le=300.0)
+    embedding_batch_size: int = Field(default=16, ge=1, le=128)
+    document_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+    document_max_characters: int = Field(default=2_000_000, ge=1000, le=20_000_000)
+    document_max_pages: int = Field(default=500, ge=1, le=5000)
+    chunk_max_chars: int = Field(default=1200, ge=200, le=8000)
+    chunk_overlap_chars: int = Field(default=150, ge=0, le=2000)
+    retrieval_top_k: int = Field(default=5, ge=1, le=20)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = True
     configured_credentials: frozenset[str] = Field(
@@ -110,6 +123,12 @@ class AppSettings(BaseModel):
             ("postgresql://", "postgresql+psycopg://")
         ):
             raise ValueError("生产环境 IT_DATABASE_URL 必须使用 PostgreSQL")
+        if self.environment == "production" and self.embedding_mode != "provider":
+            raise ValueError("生产环境 IT_EMBEDDING_MODE 必须使用 provider")
+        if self.embedding_dimension != 1024:
+            raise ValueError("IT_EMBEDDING_DIMENSION 必须为当前索引维度 1024")
+        if self.chunk_overlap_chars >= self.chunk_max_chars:
+            raise ValueError("IT_CHUNK_OVERLAP_CHARS 必须小于 IT_CHUNK_MAX_CHARS")
         return self
 
     @classmethod
@@ -160,6 +179,19 @@ class AppSettings(BaseModel):
             model_retry_backoff_seconds=float(read("IT_MODEL_RETRY_BACKOFF_SECONDS", "0.25")),
             model_max_output_tokens=int(read("IT_MODEL_MAX_OUTPUT_TOKENS", "512")),
             model_temperature=float(read("IT_MODEL_TEMPERATURE", "0.1")),
+            embedding_mode=read("IT_EMBEDDING_MODE", "hash").strip().lower(),
+            embedding_provider=read("IT_EMBEDDING_PROVIDER", "qwen").strip().lower(),
+            embedding_model=read("IT_EMBEDDING_MODEL", "text-embedding-v3").strip(),
+            embedding_base_url=read("IT_EMBEDDING_BASE_URL", "").strip(),
+            embedding_dimension=int(read("IT_EMBEDDING_DIMENSION", "1024")),
+            embedding_timeout_seconds=float(read("IT_EMBEDDING_TIMEOUT_SECONDS", "60")),
+            embedding_batch_size=int(read("IT_EMBEDDING_BATCH_SIZE", "16")),
+            document_max_bytes=int(read("IT_DOCUMENT_MAX_BYTES", str(20 * 1024 * 1024))),
+            document_max_characters=int(read("IT_DOCUMENT_MAX_CHARACTERS", "2000000")),
+            document_max_pages=int(read("IT_DOCUMENT_MAX_PAGES", "500")),
+            chunk_max_chars=int(read("IT_CHUNK_MAX_CHARS", "1200")),
+            chunk_overlap_chars=int(read("IT_CHUNK_OVERLAP_CHARS", "150")),
+            retrieval_top_k=int(read("IT_RETRIEVAL_TOP_K", "5")),
             log_level=read("IT_LOG_LEVEL", "INFO").strip().upper(),
             log_json=_bool(read("IT_LOG_JSON", "true")),
             configured_credentials=frozenset(credential_values),

@@ -56,6 +56,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         settings = AppSettings(
             environment="production",
             database_url="postgresql+psycopg://user:secret@db/docmind",
+            embedding_mode="provider",
         )
         self.assertNotIn("secret", repr(settings))
         self.assertNotIn("database_url", settings.public())

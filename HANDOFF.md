@@ -22,6 +22,7 @@
 - 已实现强类型配置、`.env.example`、存活/就绪检查和隐私收敛的 JSON 日志。
 - 已引入 PostgreSQL、SQLAlchemy Repository 和 Alembic；生产环境禁止 SQLite 和自动建表。
 - 已接入 OpenAI 兼容真实模型网关，并实现逐尝试 Token/费用账本和前端会话汇总。
+- 已实现 Markdown/TXT/PDF/DOCX 独立导入、版本去重、pgvector、全文 + 向量 RRF 混合检索和可追溯引用。
 
 ## 当前接口
 
@@ -38,8 +39,8 @@
 
 ## 当前限制
 
-- 只支持本地 `knowledge.md`，尚未实现企业文档导入。
-- 当前首个迁移仅包含查询历史表，引用、用量和审计表仍待后续迁移。
+- 文档导入当前为后台命令，尚未提供带 SSO/RBAC 的独立管理后台和异步 Worker。
+- 文档 ACL、引用持久化表和管理审计表仍待后续迁移。
 - 尚未配置真实生产供应商密钥，也未在当前机器执行外部供应商联调。
 - 尚未接入企业 SSO、RBAC 和文档 ACL。
 - 前端尚未提供独立管理后台、反馈和引用详情面板。
@@ -50,7 +51,7 @@
 D:\WorkBuddy\docmind-it-assistant\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
-当前基线：28 项测试通过，覆盖查询、真实网关协议、失败重试、Token/费用账本、路由、计价、隔离边界、配置校验、健康检查、迁移升降级与漂移检查、请求 ID 和日志隐私。
+当前基线：34 项测试通过，覆盖查询、文档解析/去重/版本、混合检索、检索降级、真实网关协议、Token/费用账本、隔离边界、配置、健康检查、迁移升降级与日志隐私。
 
 启动示例：
 
@@ -62,8 +63,8 @@ D:\WorkBuddy\docmind-it-assistant\.venv\Scripts\python.exe -B -m unittest discov
 
 按 `docs/implementation-roadmap.md` 从 P0 工程底座开始：
 
-1. 建立引用与审计数据表；
-2. 为用量接口加入企业身份和权限；
-3. 接入文档导入链路与正式检索。
+1. 接入 OIDC、RBAC 和检索前文档 ACL；
+2. 将导入命令升级为独立 Worker 与受保护管理后台；
+3. 建立引用持久化、审计和检索质量评测。
 
 不要在当前演示结构上直接加入开发工具，也不要从 `rag-agent` 运行时导入模块。

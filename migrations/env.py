@@ -55,6 +55,14 @@ def run_migrations_online() -> None:
                 and getattr(getattr(object_, "table", None), "name", "") == "queries"
             ):
                 return False
+            if connection.dialect.name == "postgresql" and (
+                (type_ == "column" and _name == "search_vector")
+                or (type_ == "index" and _name in {
+                    "ix_document_chunks_search_vector",
+                    "ix_document_chunks_embedding_hnsw",
+                })
+            ):
+                return False
             return True
 
         context.configure(

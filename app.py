@@ -12,7 +12,8 @@ from pydantic import BaseModel
 
 from assistant import ITQueryService
 from backend import (
-    AppSettings, ModelGateway, ModelGatewayError, ModelRouter, QueryDatabase, configure_logging, log_event,
+    AppSettings, EmbeddingClient, HybridRetriever, ModelGateway, ModelGatewayError,
+    ModelRouter, QueryDatabase, build_embedding_client, configure_logging, log_event,
     request_id_context,
 )
 
@@ -26,7 +27,8 @@ class QueryReq(BaseModel):
     question: str = ""
 
 
-def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway | None = None) -> FastAPI:
+def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway | None = None,
+               embedding_client: EmbeddingClient | None = None) -> FastAPI:
     config = settings or AppSettings.from_environment()
     configure_logging(config)
     database = QueryDatabase(
@@ -56,7 +58,9 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         max_output_tokens=config.model_max_output_tokens,
         temperature=config.model_temperature,
     )
-    service = ITQueryService(str(config.knowledge_path), database, models, gateway)
+    embeddings = embedding_client or build_embedding_client(config)
+    retriever = HybridRetriever(database, embeddings, top_k=config.retrieval_top_k)
+    service = ITQueryService(str(config.knowledge_path), database, models, gateway, retriever)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
@@ -75,6 +79,8 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
     application.state.database = database
     application.state.models = models
     application.state.gateway = gateway
+    application.state.embeddings = embeddings
+    application.state.retriever = retriever
     application.state.service = service
 
     @application.middleware("http")
@@ -119,6 +125,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
     async def health_ready():
         database_ok, database_reason = database.healthcheck()
         model_ok, model_reason = models.healthcheck()
+        embedding_ok, embedding_reason = retriever.healthcheck()
         knowledge_ok = config.knowledge_path.is_file()
         web_ok = config.web_index_path.is_file()
         checks = {
@@ -126,6 +133,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
             "knowledge": {"ok": knowledge_ok, "reason": "ok" if knowledge_ok else "knowledge_missing"},
             "web": {"ok": web_ok, "reason": "ok" if web_ok else "web_index_missing"},
             "model": {"ok": model_ok, "reason": model_reason},
+            "embedding": {"ok": embedding_ok, "reason": embedding_reason},
         }
         ready = all(item["ok"] for item in checks.values())
         return JSONResponse(

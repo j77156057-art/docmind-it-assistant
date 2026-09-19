@@ -4,6 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from decimal import Decimal
+from collections import Counter
+from datetime import datetime, timezone
+import math
 
 from sqlalchemy import case, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
@@ -11,8 +14,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-from .db_models import Base, ModelUsageRecord, QueryRecord
+from .db_models import (
+    Base, DocumentChunkRecord, DocumentRecord, DocumentVersionRecord,
+    ModelUsageRecord, QueryRecord,
+)
 from .pricing import cost_cny, pricing_status
+from .text_index import lexical_text, lexical_terms
 
 
 def _database_url(value: str) -> str:
@@ -66,7 +73,12 @@ class QueryDatabase:
             with self.engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
             tables = set(inspect(self.engine).get_table_names())
-            if QueryRecord.__tablename__ not in tables or ModelUsageRecord.__tablename__ not in tables:
+            required = {
+                QueryRecord.__tablename__, ModelUsageRecord.__tablename__,
+                DocumentRecord.__tablename__, DocumentVersionRecord.__tablename__,
+                DocumentChunkRecord.__tablename__,
+            }
+            if not required.issubset(tables):
                 return False, "database_schema_missing"
             return True, "ok"
         except (OSError, SQLAlchemyError):
@@ -83,6 +95,13 @@ class QueryDatabase:
         with self._sessions.begin() as session:
             session.add(row)
         return int(row.id)
+
+    def update_query_route(self, query_id: int, model_route: str, evidence: str) -> None:
+        with self._sessions.begin() as session:
+            row = session.get(QueryRecord, query_id)
+            if row is not None:
+                row.model_route = model_route
+                row.evidence = evidence
 
     def history(self, session_id: str, limit: int = 20) -> list[dict]:
         self.initialize()
@@ -120,6 +139,8 @@ class QueryDatabase:
                 )))
             rows.append(ModelUsageRecord(
                 query_id=query_id,
+                document_version_id=None,
+                operation="chat",
                 request_id=request_id[:128],
                 provider=route["provider"],
                 model=route["model"][:128],
@@ -140,6 +161,317 @@ class QueryDatabase:
         if rows:
             with self._sessions.begin() as session:
                 session.add_all(rows)
+
+    def record_embedding_usages(self, *, usages, request_id: str,
+                                query_id: int | None = None,
+                                document_version_id: int | None = None) -> None:
+        rows = [ModelUsageRecord(
+            query_id=query_id,
+            document_version_id=document_version_id,
+            operation="embedding",
+            request_id=request_id[:128],
+            provider=usage.provider,
+            model=usage.model[:128],
+            route="embedding",
+            attempt=index,
+            status=usage.status,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=0 if usage.prompt_tokens is not None else None,
+            total_tokens=usage.total_tokens,
+            usage_reported=usage.usage_reported,
+            input_price_cny=None,
+            output_price_cny=None,
+            cost_cny=None,
+            provider_request_id=usage.provider_request_id or None,
+            latency_ms=usage.latency_ms,
+            error_code=usage.error_code,
+        ) for index, usage in enumerate(usages, 1)]
+        if rows:
+            with self._sessions.begin() as session:
+                session.add_all(rows)
+
+    def begin_document_import(self, *, source_key: str, title: str, mime_type: str,
+                              content_sha256: str) -> dict:
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            document = session.scalar(select(DocumentRecord).where(
+                DocumentRecord.source_key == source_key[:512],
+            ))
+            if document is None:
+                document = DocumentRecord(
+                    source_key=source_key[:512], title=title[:512], mime_type=mime_type,
+                    created_at=now, updated_at=now,
+                )
+                session.add(document)
+                session.flush()
+            else:
+                document.title = title[:512]
+                document.mime_type = mime_type
+                document.updated_at = now
+            existing = session.scalar(select(DocumentVersionRecord).where(
+                DocumentVersionRecord.document_id == document.id,
+                DocumentVersionRecord.content_sha256 == content_sha256,
+            ))
+            if existing is not None and existing.status in {"indexed", "pending"}:
+                return {
+                    "document_id": document.id, "version_id": existing.id,
+                    "version": existing.version, "duplicate": True, "status": existing.status,
+                }
+            if existing is not None:
+                existing.status = "pending"
+                existing.error_code = None
+                version = existing
+            else:
+                latest = session.scalar(select(func.max(DocumentVersionRecord.version)).where(
+                    DocumentVersionRecord.document_id == document.id,
+                )) or 0
+                version = DocumentVersionRecord(
+                    document_id=document.id,
+                    version=int(latest) + 1,
+                    content_sha256=content_sha256,
+                    status="pending",
+                    chunk_count=0,
+                    created_at=now,
+                )
+                session.add(version)
+                session.flush()
+            return {
+                "document_id": document.id, "version_id": version.id,
+                "version": version.version, "duplicate": False, "status": version.status,
+            }
+
+    def complete_document_import(self, version_id: int, chunks, vectors) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("文档块和向量数量不一致")
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            version = session.get(DocumentVersionRecord, version_id)
+            if version is None:
+                raise ValueError("文档版本不存在")
+            session.query(DocumentChunkRecord).filter(
+                DocumentChunkRecord.document_version_id == version_id,
+            ).delete()
+            session.add_all([
+                DocumentChunkRecord(
+                    document_version_id=version_id,
+                    ordinal=chunk.ordinal,
+                    heading=chunk.heading[:512],
+                    page_number=chunk.page_number,
+                    content=chunk.content,
+                    search_text=lexical_text(f"{chunk.heading} {chunk.content}"),
+                    embedding=list(vector),
+                    created_at=now,
+                )
+                for chunk, vector in zip(chunks, vectors)
+            ])
+            session.query(DocumentVersionRecord).filter(
+                DocumentVersionRecord.document_id == version.document_id,
+                DocumentVersionRecord.id != version.id,
+                DocumentVersionRecord.status == "indexed",
+            ).update({"status": "superseded"})
+            version.status = "indexed"
+            version.chunk_count = len(chunks)
+            version.error_code = None
+            version.published_at = now
+
+    def fail_document_import(self, version_id: int, error_code: str) -> None:
+        with self._sessions.begin() as session:
+            version = session.get(DocumentVersionRecord, version_id)
+            if version is not None:
+                version.status = "failed"
+                version.error_code = error_code[:64]
+
+    def list_documents(self) -> list[dict]:
+        statement = (
+            select(DocumentRecord, DocumentVersionRecord)
+            .join(DocumentVersionRecord, DocumentVersionRecord.document_id == DocumentRecord.id)
+            .order_by(DocumentRecord.id, DocumentVersionRecord.version.desc())
+        )
+        with self._sessions() as session:
+            rows = session.execute(statement).all()
+        return [{
+            "document_id": document.id,
+            "title": document.title,
+            "source_key": document.source_key,
+            "version": version.version,
+            "status": version.status,
+            "chunk_count": version.chunk_count,
+            "created_at": version.created_at.isoformat(),
+        } for document, version in rows]
+
+    def document_usage_ledger(self, version_id: int) -> list[dict]:
+        statement = (
+            select(ModelUsageRecord)
+            .where(ModelUsageRecord.document_version_id == version_id)
+            .order_by(ModelUsageRecord.id)
+        )
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._usage_public(row) for row in rows]
+
+    def has_indexed_chunks(self) -> bool:
+        statement = (
+            select(func.count(DocumentChunkRecord.id))
+            .join(DocumentVersionRecord)
+            .where(DocumentVersionRecord.status == "indexed")
+        )
+        with self._sessions() as session:
+            return bool(session.scalar(statement))
+
+    def hybrid_search(self, query: str, embedding: list[float], limit: int = 5) -> list[dict]:
+        if self.backend == "postgresql":
+            return self._postgres_hybrid_search(query, embedding, limit)
+        return self._portable_hybrid_search(query, embedding, limit)
+
+    def lexical_search(self, query: str, limit: int = 5) -> list[dict]:
+        if self.backend == "postgresql":
+            statement = text("""
+                SELECT c.id, d.title, v.version, c.ordinal, c.heading, c.page_number,
+                       c.content, ts_rank_cd(
+                           c.search_vector, websearch_to_tsquery('simple', :query)
+                       ) AS score
+                FROM document_chunks c
+                JOIN document_versions v ON v.id = c.document_version_id
+                JOIN documents d ON d.id = v.document_id
+                WHERE v.status = 'indexed'
+                  AND c.search_vector @@ websearch_to_tsquery('simple', :query)
+                ORDER BY score DESC LIMIT :result_limit
+            """)
+            with self.engine.connect() as connection:
+                return [dict(row) for row in connection.execute(statement, {
+                    "query": self._postgres_websearch_query(query), "result_limit": limit,
+                }).mappings().all()]
+        results = self._portable_hybrid_search(query, [0.0] * 1024, max(limit * 4, 20))
+        lexical = [item for item in results if item.get("lexical_rank") is not None]
+        return sorted(lexical, key=lambda item: item["lexical_rank"])[:limit]
+
+    def _postgres_hybrid_search(self, query: str, embedding: list[float], limit: int) -> list[dict]:
+        statement = text("""
+            WITH eligible AS (
+                SELECT c.*, d.title, v.version
+                FROM document_chunks c
+                JOIN document_versions v ON v.id = c.document_version_id
+                JOIN documents d ON d.id = v.document_id
+                WHERE v.status = 'indexed'
+            ), lexical AS (
+                SELECT id, row_number() OVER (ORDER BY lexical_score DESC) AS lexical_rank
+                FROM (
+                    SELECT id, ts_rank_cd(
+                        search_vector, websearch_to_tsquery('simple', :query)
+                    ) lexical_score
+                    FROM eligible
+                    WHERE search_vector @@ websearch_to_tsquery('simple', :query)
+                    ORDER BY lexical_score DESC LIMIT :candidate_limit
+                ) ranked
+            ), semantic AS (
+                SELECT id, similarity,
+                       row_number() OVER (ORDER BY similarity DESC) AS semantic_rank
+                FROM (
+                    SELECT id, 1 - (embedding <=> CAST(:embedding AS vector)) similarity
+                    FROM eligible
+                    ORDER BY embedding <=> CAST(:embedding AS vector)
+                    LIMIT :candidate_limit
+                ) ranked
+            ), candidates AS (
+                SELECT id FROM lexical UNION SELECT id FROM semantic
+            )
+            SELECT e.id, e.title, e.version, e.ordinal, e.heading, e.page_number, e.content,
+                   l.lexical_rank, s.semantic_rank, s.similarity,
+                   COALESCE(1.0 / (60 + l.lexical_rank), 0) +
+                   COALESCE(1.0 / (60 + s.semantic_rank), 0) AS score
+            FROM candidates x
+            JOIN eligible e ON e.id = x.id
+            LEFT JOIN lexical l ON l.id = x.id
+            LEFT JOIN semantic s ON s.id = x.id
+            WHERE l.lexical_rank IS NOT NULL OR s.similarity >= :semantic_threshold
+            ORDER BY score DESC LIMIT :result_limit
+        """)
+        vector_value = "[" + ",".join(f"{value:.10f}" for value in embedding) + "]"
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement, {
+                "query": self._postgres_websearch_query(query),
+                "embedding": vector_value,
+                "candidate_limit": max(20, limit * 5),
+                "semantic_threshold": 0.35,
+                "result_limit": limit,
+            }).mappings().all()
+        return [dict(row) for row in rows]
+
+    def _portable_hybrid_search(self, query: str, embedding: list[float], limit: int) -> list[dict]:
+        statement = (
+            select(DocumentChunkRecord, DocumentRecord.title, DocumentVersionRecord.version)
+            .join(DocumentVersionRecord, DocumentVersionRecord.id == DocumentChunkRecord.document_version_id)
+            .join(DocumentRecord, DocumentRecord.id == DocumentVersionRecord.document_id)
+            .where(DocumentVersionRecord.status == "indexed")
+        )
+        with self._sessions() as session:
+            rows = session.execute(statement).all()
+        if not rows:
+            return []
+        query_terms = lexical_terms(query)
+        term_counts = [Counter((chunk.search_text or "").split()) for chunk, _, _ in rows]
+        average_length = sum(sum(counts.values()) for counts in term_counts) / len(term_counts)
+        document_frequency = Counter(
+            term for counts in term_counts for term in set(counts) if term in query_terms
+        )
+        lexical_scores: dict[int, float] = {}
+        semantic_scores: dict[int, float] = {}
+        for (chunk, _, _), counts in zip(rows, term_counts):
+            length = sum(counts.values()) or 1
+            score = 0.0
+            for term in query_terms:
+                frequency = counts.get(term, 0)
+                if not frequency:
+                    continue
+                inverse = math.log(1 + (len(rows) - document_frequency[term] + 0.5) /
+                                   (document_frequency[term] + 0.5))
+                score += inverse * frequency / (
+                    frequency + 1.2 * (0.25 + 0.75 * length / (average_length or 1))
+                )
+            lexical_scores[chunk.id] = score
+            semantic_scores[chunk.id] = self._cosine(embedding, chunk.embedding)
+        lexical_rank = {
+            chunk_id: rank for rank, (chunk_id, score) in enumerate(
+                sorted(lexical_scores.items(), key=lambda item: item[1], reverse=True), 1,
+            ) if score > 0
+        }
+        semantic_rank = {
+            chunk_id: rank for rank, (chunk_id, _score) in enumerate(
+                sorted(semantic_scores.items(), key=lambda item: item[1], reverse=True), 1,
+            )
+        }
+        results = []
+        for chunk, title, version in rows:
+            similarity = semantic_scores[chunk.id]
+            if chunk.id not in lexical_rank and similarity < 0.35:
+                continue
+            score = (
+                (1 / (60 + lexical_rank[chunk.id])) if chunk.id in lexical_rank else 0
+            ) + (1 / (60 + semantic_rank[chunk.id]))
+            results.append({
+                "id": chunk.id, "title": title, "version": version,
+                "ordinal": chunk.ordinal, "heading": chunk.heading,
+                "page_number": chunk.page_number, "content": chunk.content,
+                "lexical_rank": lexical_rank.get(chunk.id),
+                "semantic_rank": semantic_rank[chunk.id],
+                "similarity": similarity, "score": score,
+            })
+        return sorted(results, key=lambda item: item["score"], reverse=True)[:limit]
+
+    @staticmethod
+    def _cosine(left, right) -> float:
+        if not left or not right or len(left) != len(right):
+            return 0.0
+        numerator = sum(float(a) * float(b) for a, b in zip(left, right))
+        left_norm = math.sqrt(sum(float(value) ** 2 for value in left))
+        right_norm = math.sqrt(sum(float(value) ** 2 for value in right))
+        if not left_norm or not right_norm:
+            return 0.0
+        return max(-1.0, min(1.0, numerator / (left_norm * right_norm)))
+
+    @staticmethod
+    def _postgres_websearch_query(query: str) -> str:
+        return " OR ".join(f'"{term}"' for term in lexical_terms(query))
 
     def usage_ledger(self, session_id: str, limit: int = 50) -> list[dict]:
         count = max(1, min(int(limit), 100))
@@ -195,6 +527,8 @@ class QueryDatabase:
         return {
             "id": row.id,
             "query_id": row.query_id,
+            "document_version_id": row.document_version_id,
+            "operation": row.operation,
             "request_id": row.request_id,
             "provider": row.provider,
             "model": row.model,

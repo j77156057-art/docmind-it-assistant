@@ -47,12 +47,13 @@ DocMind IT 查询助手是面向企业员工的只读知识查询系统。它根
 
 | 模块 | 当前实现 | 企业级目标 |
 |---|---|---|
-| `assistant/` | Markdown 只读检索与引用 | 查询编排、证据充分性和拒答策略 |
-| `backend/database.py` | SQLite 查询记录 | PostgreSQL Repository、迁移和数据保留策略 |
-| `backend/models.py` | 模型路由决策 | 健康探测、超时、降级与调用结果标准化 |
+| `assistant/` | 版本化知识检索、引用和安全拒答 | ACL 后查询编排与引用持久化 |
+| `backend/database.py` | PostgreSQL/SQLite Repository、pgvector 混合检索 | 数据保留、分区与租户隔离 |
+| `backend/models.py` | 模型路由与真实调用 | 熔断、预算和自动降级 |
 | `backend/providers.py` | 独立供应商目录 | 配置中心、密钥引用和供应商准入 |
 | `backend/pricing.py` | Token 单价与费用计算 | 版本化价格表、预算和成本告警 |
 | `web/` | 只读查询页面 | SSO、引用展开、反馈、历史与无障碍支持 |
+| `ingestion/` | 独立解析、去重、版本、分块和向量化命令 | 异步 Worker、审批发布、回滚和管理审计 |
 
 ## 5. 核心数据模型
 

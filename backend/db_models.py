@@ -5,8 +5,25 @@ from datetime import datetime, timezone
 
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
+from pgvector.sqlalchemy import Vector
+
+
+EMBEDDING_DIMENSION = 1024
+
+
+class EmbeddingVector(TypeDecorator):
+    """Use pgvector in PostgreSQL and JSON vectors in isolated SQLite tests."""
+
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(Vector(EMBEDDING_DIMENSION))
+        return dialect.type_descriptor(JSON())
 
 
 class Base(DeclarativeBase):
@@ -30,9 +47,13 @@ class ModelUsageRecord(Base):
     __tablename__ = "model_usage_ledger"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    query_id: Mapped[int] = mapped_column(
-        ForeignKey("queries.id", ondelete="CASCADE"), nullable=False, index=True,
+    query_id: Mapped[int | None] = mapped_column(
+        ForeignKey("queries.id", ondelete="CASCADE"), nullable=True, index=True,
     )
+    document_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=True, index=True,
+    )
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, default="chat")
     request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -51,4 +72,62 @@ class ModelUsageRecord(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True,
+    )
+
+
+class DocumentRecord(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class DocumentVersionRecord(Base):
+    __tablename__ = "document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "version", name="uq_document_versions_number"),
+        UniqueConstraint("document_id", "content_sha256", name="uq_document_versions_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DocumentChunkRecord(Base):
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_version_id", "ordinal", name="uq_document_chunks_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_version_id: Mapped[int] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    heading: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    search_text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(EmbeddingVector(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
     )
