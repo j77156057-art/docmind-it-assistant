@@ -57,7 +57,7 @@ class ModelConfigReq(BaseModel):
     mode: Literal["knowledge", "local", "cloud"]
     provider: str = Field(min_length=1, max_length=32)
     model: str = Field(min_length=1, max_length=128)
-    response_strategy: Literal["knowledge_first", "generative_first", "hybrid"] = "knowledge_first"
+    response_strategy: Literal["knowledge_first", "generative_first", "hybrid"] | None = None
 
 
 def create_admin_app(settings: AppSettings | None = None,
@@ -367,7 +367,8 @@ def create_admin_app(settings: AppSettings | None = None,
     @application.put("/api/admin/model-config")
     async def update_model_config(payload: ModelConfigReq,
                                   principal: Principal = Depends(admin)):
-        target_ref = f"{payload.mode}:{payload.provider}:{payload.model}:{payload.response_strategy}"
+        response_strategy = payload.response_strategy or models.response_strategy()
+        target_ref = f"{payload.mode}:{payload.provider}:{payload.model}:{response_strategy}"
         try:
             selected = models.validate_selection(payload.mode, payload.provider, payload.model)
         except ValueError as exc:
@@ -400,7 +401,7 @@ def create_admin_app(settings: AppSettings | None = None,
             mode=selected["mode"],
             provider=selected["provider"],
             model=selected["model"],
-            response_strategy=payload.response_strategy,
+            response_strategy=response_strategy,
             actor_subject_id=principal.subject_id,
             request_id=request_id_context.get(),
         )
