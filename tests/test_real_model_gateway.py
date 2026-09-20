@@ -124,6 +124,32 @@ class RealModelGatewayTests(unittest.TestCase):
         self.assertIsNone(usage["cost_cny"])
         self.assertFalse(usage["pricing_known"])
 
+    def test_ollama_native_chat_disables_thinking_and_maps_usage(self):
+        captured = {}
+
+        def handler(request: httpx.Request):
+            captured["path"] = request.url.path
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "message": {"role": "assistant", "content": "VPN 是加密网络通道。"},
+                "prompt_eval_count": 20,
+                "eval_count": 8,
+                "done": True,
+            })
+
+        gateway = ModelGateway(max_retries=0, transport=httpx.MockTransport(handler))
+        result = gateway.complete(
+            route={"provider": "ollama", "model": "qwen3:8b"},
+            base_url="http://127.0.0.1:11434/v1", api_key="",
+            question="VPN 是什么？", context="内部资料", citations=[],
+        )
+
+        self.assertEqual(result.content, "VPN 是加密网络通道。")
+        self.assertEqual(captured["path"], "/api/chat")
+        self.assertFalse(captured["payload"]["think"])
+        self.assertEqual(captured["payload"]["options"]["num_predict"], 512)
+        self.assertEqual(result.attempts[-1].total_tokens, 28)
+
     def test_http_query_and_usage_endpoints(self):
         def handler(_request: httpx.Request):
             return httpx.Response(200, json={

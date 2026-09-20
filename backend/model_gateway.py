@@ -65,6 +65,7 @@ class ModelGateway:
             for index, item in enumerate(citations or [], 1)
         )
         evidence_block = context.strip() or "（没有检索到可供引用的内部资料）"
+        is_ollama = route.get("provider") == "ollama"
         payload = {
             "model": route["model"],
             "messages": [
@@ -83,11 +84,24 @@ class ModelGateway:
                 )},
             ],
             "temperature": self.temperature,
-            "max_tokens": self.max_output_tokens,
             "stream": False,
         }
+        if is_ollama:
+            # Ollama's native API supports disabling Qwen thinking; its
+            # OpenAI-compatible endpoint may return an empty content field
+            # while spending the whole budget on reasoning.
+            payload["think"] = False
+            payload["options"] = {"num_predict": self.max_output_tokens}
+        else:
+            payload["max_tokens"] = self.max_output_tokens
         attempts: list[GatewayAttempt] = []
-        endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        if is_ollama:
+            native_base = base_url.rstrip("/")
+            if native_base.endswith("/v1"):
+                native_base = native_base[:-3]
+            endpoint = f"{native_base}/api/chat"
+        else:
+            endpoint = f"{base_url.rstrip('/')}/chat/completions"
         with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
             for attempt_number in range(1, self.max_retries + 2):
                 started = time.perf_counter()
@@ -107,7 +121,10 @@ class ModelGateway:
                         raise ModelGatewayError(error_code, attempts)
                     try:
                         body = response.json()
-                        content = body["choices"][0]["message"]["content"]
+                        if is_ollama:
+                            content = body["message"]["content"]
+                        else:
+                            content = body["choices"][0]["message"]["content"]
                         if not isinstance(content, str) or not content.strip():
                             raise ValueError("empty content")
                     except (KeyError, IndexError, TypeError, ValueError):
@@ -119,9 +136,23 @@ class ModelGateway:
                         raise ModelGatewayError(error_code, attempts) from None
                     usage = body.get("usage") if isinstance(body, dict) else None
                     usage = usage if isinstance(usage, dict) else {}
-                    prompt_tokens = _token_value(usage.get("prompt_tokens"))
-                    completion_tokens = _token_value(usage.get("completion_tokens"))
-                    total_tokens = _token_value(usage.get("total_tokens"))
+                    prompt_tokens = _token_value(
+                        usage.get("prompt_tokens") if not is_ollama
+                        else body.get("prompt_eval_count")
+                    )
+                    completion_tokens = _token_value(
+                        usage.get("completion_tokens") if not is_ollama
+                        else body.get("eval_count")
+                    )
+                    if is_ollama:
+                        native_prompt = _token_value(body.get("prompt_eval_count"))
+                        native_completion = _token_value(body.get("eval_count"))
+                        total_tokens = (
+                            native_prompt + native_completion
+                            if native_prompt is not None and native_completion is not None else None
+                        )
+                    else:
+                        total_tokens = _token_value(usage.get("total_tokens"))
                     usage_reported = prompt_tokens is not None and completion_tokens is not None
                     if total_tokens is None and usage_reported:
                         total_tokens = prompt_tokens + completion_tokens
