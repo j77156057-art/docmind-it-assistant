@@ -182,7 +182,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         except AuthenticationError:
             raise HTTPException(status_code=401, detail="用户名或密码错误") from None
         response = JSONResponse({"ok": True})
-        response.set_cookie("docmind_session", token, httponly=True, samesite="lax",
+        response.set_cookie("docmind_session", token, httponly=True, samesite="strict",
                             secure=config.environment == "production", max_age=config.local_session_hours * 3600)
         return response
 

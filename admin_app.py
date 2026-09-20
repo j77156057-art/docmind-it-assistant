@@ -222,7 +222,7 @@ def create_admin_app(settings: AppSettings | None = None,
         except AuthenticationError:
             raise HTTPException(status_code=401, detail="用户名或密码错误") from None
         response = JSONResponse({"ok": True})
-        response.set_cookie("docmind_session", token, httponly=True, samesite="lax",
+        response.set_cookie("docmind_session", token, httponly=True, samesite="strict",
                             secure=config.environment == "production", max_age=config.local_session_hours * 3600)
         return response
 
@@ -373,6 +373,7 @@ def create_admin_app(settings: AppSettings | None = None,
         active = models.status()
         runtime_status = await run_in_threadpool(
             runtime.status, active, models.base_url({**active, "route": active["mode"]}),
+            models.credential(active["provider"]),
         )
         local_models = {}
         for provider in ("ollama", "llamacpp"):
