@@ -11,4 +11,4 @@ openpyxl==3.1.5
 python-pptx==1.0.2
 python-multipart==0.0.32
 PyJWT[crypto]==2.14.0
-uvicorn==0.52.4
+uvicorn==0.53.0
