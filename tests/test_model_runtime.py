@@ -7,6 +7,20 @@ from backend import ModelRuntime, ModelRuntimeError
 
 
 class ModelRuntimeTests(unittest.TestCase):
+    def test_lists_all_installed_ollama_models_without_loading_them(self):
+        def handler(request: httpx.Request):
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.path, "/api/tags")
+            return httpx.Response(200, json={"models": [
+                {"name": "qwen3:8b"}, {"name": "qwen2.5:7b"}, {"name": "qwen3:8b"},
+            ]})
+
+        result = ModelRuntime(transport=httpx.MockTransport(handler)).available_models(
+            "ollama", "http://127.0.0.1:11434/v1",
+        )
+        self.assertEqual(result["models"], ["qwen2.5:7b", "qwen3:8b"])
+        self.assertTrue(result["reachable"])
+
     def test_ollama_activation_runs_real_probe_and_confirms_residency(self):
         calls = []
 

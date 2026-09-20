@@ -307,6 +307,8 @@ class SsoRbacAclTests(unittest.TestCase):
         self.assertEqual(initial.json()["mode"], "knowledge")
         self.assertEqual(visible.status_code, 200)
         self.assertTrue(any(item["key"] == "ollama" for item in visible.json()["providers"]))
+        self.assertIn("ollama", visible.json()["local_models"])
+        self.assertIn("llamacpp", visible.json()["local_models"])
         self.assertEqual(denied.status_code, 403)
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(updated.status_code, 200)

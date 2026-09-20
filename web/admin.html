@@ -173,7 +173,7 @@
                 <label><input type="radio" name="mode" value="cloud"><span>云端</span></label>
               </div></fieldset>
               <label class="field"><span>供应商</span><select id="modelProvider" name="provider"></select></label>
-              <label class="field"><span>模型</span><input id="modelName" name="model" maxlength="128" required></label>
+              <label class="field"><span>模型</span><input id="modelName" name="model" list="modelOptions" maxlength="128" required><datalist id="modelOptions"></datalist><small class="field-hint" id="modelOptionsHint">正在读取本机已安装模型…</small></label>
               <dl class="model-details">
                 <div><dt>当前生效</dt><dd id="activeModel">-</dd></div>
                 <div><dt>上下文</dt><dd id="modelContext">-</dd></div>

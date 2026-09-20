@@ -505,6 +505,23 @@
     const context = Number(option.dataset.contextWindow || 0);
     $('modelContext').textContent = context ? `${context.toLocaleString()} Token` : '不适用';
     $('modelCredential').textContent = option.dataset.baseUrlConfigured === 'false' ? '服务地址未配置' : option.dataset.credential;
+    renderLocalModels();
+  }
+
+  function renderLocalModels() {
+    const provider = $('modelProvider').value;
+    const entry = state.modelConfig?.local_models?.[provider];
+    const options = entry?.models || [];
+    const list = $('modelOptions');
+    list.replaceChildren();
+    options.forEach(name => {
+      const option = document.createElement('option');
+      option.value = name;
+      list.appendChild(option);
+    });
+    $('modelOptionsHint').textContent = options.length
+      ? `本机已检测到 ${options.length} 个模型，可直接选择；也可以手动填写模型名。`
+      : (entry?.reachable === false ? '未连接到本地模型服务；启动后点击刷新即可读取全部模型。' : '暂未发现已安装模型，可手动填写模型名。');
   }
 
   function renderModelConfig(payload) {

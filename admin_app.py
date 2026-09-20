@@ -329,10 +329,19 @@ def create_admin_app(settings: AppSettings | None = None,
         runtime_status = await run_in_threadpool(
             runtime.status, active, models.base_url({**active, "route": active["mode"]}),
         )
+        local_models = {}
+        for provider in ("ollama", "llamacpp"):
+            provider_route = models._selection("local", provider, "")
+            local_models[provider] = await run_in_threadpool(
+                runtime.available_models,
+                provider,
+                models.base_url({**provider_route, "route": "local"}),
+            )
         return {
             "ok": True,
             "active": active,
             "runtime": runtime_status,
+            "local_models": local_models,
             "providers": models.catalog(),
             "override": database.runtime_model_config(),
         }

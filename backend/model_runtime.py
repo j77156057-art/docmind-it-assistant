@@ -51,6 +51,32 @@ class ModelRuntime:
             return self._openai_compatible_status(provider, model, base_url)
         return self._ollama_status(model, base_url)
 
+    def available_models(self, provider: str, base_url: str) -> dict:
+        """List models exposed by a local provider without loading or billing one."""
+        provider = (provider or "").strip().lower()
+        if provider == "ollama":
+            endpoint = f"{self._native_ollama_base(base_url)}/api/tags"
+            try:
+                with httpx.Client(timeout=min(self.timeout_seconds, 8.0), transport=self.transport) as client:
+                    response = client.get(endpoint)
+                    response.raise_for_status()
+                    rows = response.json().get("models", [])
+                names = sorted({item.get("name") or item.get("model") for item in rows if isinstance(item, dict)})
+                return {"provider": provider, "reachable": True, "models": [name for name in names if name]}
+            except (httpx.HTTPError, ValueError, AttributeError):
+                return {"provider": provider, "reachable": False, "models": []}
+        if provider == "llamacpp":
+            try:
+                with httpx.Client(timeout=min(self.timeout_seconds, 8.0), transport=self.transport) as client:
+                    response = client.get(f"{base_url.rstrip('/')}/models")
+                    response.raise_for_status()
+                    rows = response.json().get("data", [])
+                names = sorted({item.get("id") for item in rows if isinstance(item, dict)})
+                return {"provider": provider, "reachable": True, "models": [name for name in names if name]}
+            except (httpx.HTTPError, ValueError, AttributeError):
+                return {"provider": provider, "reachable": False, "models": []}
+        return {"provider": provider, "reachable": False, "models": []}
+
     def activate(self, selection: dict, base_url: str) -> dict:
         mode = selection.get("mode") or selection.get("route")
         provider = selection.get("provider", "")
