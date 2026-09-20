@@ -9,6 +9,8 @@ updates:
       python-dependencies:
         patterns:
           - "*"
+    ignore:
+      - dependency-name: pydantic-core
 
   - package-ecosystem: github-actions
     directory: "/"
