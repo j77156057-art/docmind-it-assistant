@@ -99,7 +99,8 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 
 | 方法 | 路径 | 最低角色 | 用途 |
 |---|---|---|---|
-| `GET` | `/api/admin/documents` | auditor | 查看文档版本与访问范围 |
+| `GET` | `/api/admin/documents` | auditor | 查看文档版本、访问范围与原文件状态 |
+| `GET` | `/api/admin/documents/{id}/versions/{version}/source` | auditor | 在线查看或下载原文件 |
 | `GET/PUT` | `/api/admin/documents/{id}/acl` | auditor/admin | 查看或替换文档 ACL |
 | `POST` | `/api/admin/documents/import` | admin | 导入 Markdown、TXT、PDF、DOCX |
 | `GET/POST` | `/api/admin/artifacts` | auditor/admin | 查看或生成办公产物 |
@@ -109,6 +110,10 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 ## 模型与密钥
 
 知识证据不足时，可路由到 Ollama、llama.cpp 或 OpenAI 兼容云供应商。云端密钥只从进程环境或未提交的 `.env` 读取，不写入数据库、接口响应、页面或审计日志。
+
+管理后台切换到本地模型时，会先执行一次真实的短请求：Ollama 会调用 `/api/generate` 将目标模型加载并确认它出现在 `/api/ps`；llama.cpp 会调用兼容的 `/chat/completions`。探活失败不会保存新配置，系统状态页会显示“服务不可达 / 模型未安装 / 尚未启动 / 已启动”。Ollama 可用 `ollama serve` 启动服务，llama.cpp 需先运行自己的 `llama-server`（默认 `127.0.0.1:8080`）。
+
+管理后台导入的原文件会按 `data/sources/<document-id>/v<version>-<filename>` 保存，文档详情可以直接查看或下载。历史上只保留索引、未保存原件的版本会明确显示“该历史版本未保留原文件”。
 
 ```dotenv
 IT_MODEL_MODE=knowledge

@@ -125,6 +125,51 @@ class DocumentIngestionRetrievalTests(unittest.TestCase):
         self.assertIn("私密手册", authorized["answer"])
         self.assertIn("薪酬系统", authorized["answer"])
 
+    def test_named_document_overview_is_fuzzy_acl_filtered_and_model_free(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = Path(root)
+            public_path = project / "document.md"
+            public_path.write_text(
+                "# MiniMax H3 提示词速查\n本手册介绍视频提示词。\n"
+                "## 时间戳规则\n按时间顺序描述镜头。\n",
+                encoding="utf-8",
+            )
+            private_path = project / "private.md"
+            private_path.write_text(
+                "# MiniMax 内部预算\n仅限财务人员。\n## 成本明细\n保密内容。\n",
+                encoding="utf-8",
+            )
+            database = self.make_database(root)
+            embeddings = EmbeddingClient(
+                mode="hash", provider="builtin", model="hash-1024",
+                base_url="", api_key="",
+            )
+            ingestion = self.make_ingestion(database, embeddings)
+            ingestion.import_file(
+                public_path, title="document", source_key="public-minimax",
+                access_scope="public",
+            )
+            ingestion.import_file(
+                private_path, title="private", source_key="private-minimax",
+                access_scope="restricted",
+            )
+            service = ITQueryService(
+                str(project / "missing.md"), database,
+                ModelRouter("local", local_provider="ollama", local_model="qwen2.5:7b"),
+                retriever=HybridRetriever(database, embeddings),
+            )
+            principal = Principal("viewer-1", frozenset({"viewer"}), frozenset())
+
+            result = service.query("named-overview", "minmax讲了什么", principal)
+            database.dispose()
+
+        self.assertEqual(result["model"]["route"], "knowledge")
+        self.assertIsNone(result["usage"])
+        self.assertIn("MiniMax H3 提示词速查", result["answer"])
+        self.assertIn("时间戳规则", result["answer"])
+        self.assertNotIn("内部预算", result["answer"])
+        self.assertEqual(result["citations"][0]["source"], "MiniMax H3 提示词速查")
+
     def test_password_protected_pdf_is_rejected_cleanly(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "protected.pdf"

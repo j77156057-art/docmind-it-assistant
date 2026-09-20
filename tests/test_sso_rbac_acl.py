@@ -5,12 +5,13 @@ import unittest
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
+import httpx
 import jwt
 from sqlalchemy import text
 
 from admin_app import create_admin_app
 from app import create_app
-from backend import AppSettings, OIDCAuthenticator, QueryDatabase
+from backend import AppSettings, ModelRuntime, OIDCAuthenticator, QueryDatabase
 from backend.embeddings import EmbeddingClient
 from ingestion import DocumentIngestionService
 
@@ -204,8 +205,26 @@ class SsoRbacAclTests(unittest.TestCase):
                         "classification": "internal",
                     },
                 )
+                inferred_title = client.post(
+                    "/api/admin/documents/import",
+                    headers=self.headers("administrator", "admin"),
+                    files={"file": ("dns-guide.md", "## DNS\n刷新缓存。".encode(), "text/markdown")},
+                    data={
+                        "source_key": "manual/dns",
+                        "access_scope": "public",
+                        "classification": "internal",
+                    },
+                )
                 documents = client.get(
                     "/api/admin/documents", headers=self.headers("auditor", "auditor"),
+                )
+                source_view = client.get(
+                    f"/api/admin/documents/{imported.json()['document_id']}/versions/1/source",
+                    headers=self.headers("auditor", "auditor"),
+                )
+                source_download = client.get(
+                    f"/api/admin/documents/{imported.json()['document_id']}/versions/1/source?download=true",
+                    headers=self.headers("auditor", "auditor"),
                 )
                 scope_updated = client.post(
                     "/api/admin/documents/import",
@@ -229,6 +248,11 @@ class SsoRbacAclTests(unittest.TestCase):
         self.assertEqual(script.status_code, 200)
         self.assertEqual(imported.status_code, 200)
         self.assertEqual(imported.json()["title"], "VPN 手册")
+        self.assertEqual(inferred_title.json()["title"], "dns-guide")
+        self.assertTrue(documents.json()["items"][0]["source_available"])
+        self.assertEqual(source_view.content, "## VPN\n请重新登录。".encode())
+        self.assertIn("inline", source_view.headers["content-disposition"])
+        self.assertIn("attachment", source_download.headers["content-disposition"])
         self.assertEqual(documents.json()["items"][0]["access_scope"], "restricted")
         self.assertTrue(scope_updated.json()["duplicate"])
         self.assertEqual(updated_documents.json()["items"][0]["access_scope"], "public")
@@ -238,7 +262,24 @@ class SsoRbacAclTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             settings = self.make_settings(root)
             query_application = create_app(settings)
-            admin_application = create_admin_app(settings)
+
+            def ollama(request: httpx.Request):
+                if request.url.path == "/api/generate":
+                    return httpx.Response(200, json={"response": "OK", "done": True})
+                if request.url.path == "/api/tags":
+                    return httpx.Response(200, json={"models": [{"name": "qwen2.5:7b"}]})
+                if request.url.path == "/api/ps":
+                    return httpx.Response(200, json={"models": [{
+                        "name": "qwen2.5:7b", "size_vram": 4 * 1024 ** 3,
+                    }]})
+                return httpx.Response(404)
+
+            admin_application = create_admin_app(
+                settings,
+                model_runtime=ModelRuntime(
+                    timeout_seconds=1, transport=httpx.MockTransport(ollama),
+                ),
+            )
             viewer = self.headers("viewer", "viewer")
             auditor = self.headers("auditor", "auditor")
             administrator = {
@@ -269,6 +310,9 @@ class SsoRbacAclTests(unittest.TestCase):
         self.assertEqual(denied.status_code, 403)
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(updated.status_code, 200)
+        self.assertTrue(updated.json()["runtime"]["verified"])
+        self.assertTrue(updated.json()["runtime"]["loaded"])
+        self.assertEqual(updated.json()["runtime"]["vram_gb"], 4.0)
         self.assertEqual(dynamic.json()["provider"], "ollama")
         self.assertEqual(dynamic.json()["model"], "qwen2.5:7b")
         self.assertEqual(audit.json()["items"][0]["action"], "model_config_update")

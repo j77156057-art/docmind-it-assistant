@@ -308,6 +308,7 @@ class QueryDatabase:
             "document_id": document.id,
             "title": document.title,
             "source_key": document.source_key,
+            "mime_type": document.mime_type,
             "access_scope": document.access_scope,
             "classification": document.classification,
             "version": version.version,

@@ -101,6 +101,11 @@
               <div><dt>分类</dt><dd id="inspectorClass">-</dd></div>
               <div><dt>版本</dt><dd id="inspectorVersion">-</dd></div>
             </dl>
+            <div class="source-actions" id="sourceActions">
+              <a class="secondary-button" id="openSource" target="_blank" rel="noopener"><svg><use href="#i-file"/></svg>查看原文件</a>
+              <a class="secondary-button" id="downloadSource"><svg><use href="#i-download"/></svg>下载</a>
+              <span id="sourceUnavailable" hidden>该历史版本未保留原文件</span>
+            </div>
             <form id="aclForm">
               <fieldset>
                 <legend>访问范围</legend>
@@ -174,6 +179,11 @@
                 <div><dt>上下文</dt><dd id="modelContext">-</dd></div>
                 <div><dt>访问凭据</dt><dd id="modelCredential">-</dd></div>
               </dl>
+              <div class="model-runtime" id="modelRuntime">
+                <i id="runtimeIndicator"></i>
+                <div><strong id="runtimeTitle">正在检查模型</strong><span id="runtimeDetail">请稍候</span></div>
+                <button type="button" class="secondary-button" id="checkModelRuntime"><svg><use href="#i-refresh"/></svg>重新检测</button>
+              </div>
               <div class="model-actions admin-only"><button type="submit" class="primary-button" id="saveModel"><svg><use href="#i-activity"/></svg><span>应用配置</span></button></div>
             </form>
           </section>

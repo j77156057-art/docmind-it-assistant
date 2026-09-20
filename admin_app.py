@@ -10,15 +10,15 @@ import time
 from typing import Any, Literal
 import uuid
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from backend import (
     AppSettings, AuthenticationError, EmbeddingClient, OIDCAuthenticator, Principal,
-    ModelRouter, QueryDatabase, build_embedding_client, configure_logging, log_event,
-    request_id_context,
+    DocumentSourceStore, ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase,
+    build_embedding_client, configure_logging, log_event, request_id_context,
 )
 from ingestion import DocumentIngestionService
 from backend.artifacts import ARTIFACT_MEDIA_TYPES, ArtifactError, ArtifactService
@@ -60,7 +60,8 @@ class ModelConfigReq(BaseModel):
 
 
 def create_admin_app(settings: AppSettings | None = None,
-                     embedding_client: EmbeddingClient | None = None) -> FastAPI:
+                     embedding_client: EmbeddingClient | None = None,
+                     model_runtime: ModelRuntime | None = None) -> FastAPI:
     config = settings or AppSettings.from_environment()
     configure_logging(config)
     database = QueryDatabase(
@@ -92,11 +93,14 @@ def create_admin_app(settings: AppSettings | None = None,
     )
     artifacts = ArtifactService(config.artifact_output_path)
     models = ModelRouter.from_settings(config, runtime_loader=database.runtime_model_config)
+    sources = DocumentSourceStore(config.project_root / "data" / "sources")
+    runtime = model_runtime or ModelRuntime(timeout_seconds=max(60.0, config.model_timeout_seconds))
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
         database.initialize()
         artifacts.initialize()
+        sources.initialize()
         log_event(LOGGER, logging.INFO, "admin_application_started", environment=config.environment)
         yield
         database.dispose()
@@ -110,6 +114,8 @@ def create_admin_app(settings: AppSettings | None = None,
     application.state.authenticator = authenticator
     application.state.artifacts = artifacts
     application.state.models = models
+    application.state.sources = sources
+    application.state.model_runtime = runtime
 
     @application.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException):
@@ -234,7 +240,62 @@ def create_admin_app(settings: AppSettings | None = None,
 
     @application.get("/api/admin/documents")
     async def documents(_principal: Principal = Depends(auditor)):
-        return {"ok": True, "items": database.list_documents()}
+        items = []
+        for item in database.list_documents():
+            if item["source_key"] == "builtin/knowledge.md" and item["version"] == 1:
+                source = _document_source(item)
+                description = (
+                    {
+                        "source_available": True,
+                        "source_filename": source.name,
+                        "source_bytes": source.stat().st_size,
+                    }
+                    if source else sources.describe(item["document_id"], item["version"])
+                )
+            else:
+                description = sources.describe(item["document_id"], item["version"])
+            if description["source_available"]:
+                base = (
+                    f"/api/admin/documents/{item['document_id']}/versions/"
+                    f"{item['version']}/source"
+                )
+                description.update({"source_url": base, "download_url": f"{base}?download=true"})
+            items.append({**item, **description})
+        return {"ok": True, "items": items}
+
+    def _document_source(item: dict) -> Path | None:
+        if item["source_key"] == "builtin/knowledge.md" and item["version"] == 1:
+            return config.knowledge_path if config.knowledge_path.is_file() else None
+        return sources.resolve(item["document_id"], item["version"])
+
+    @application.get("/api/admin/documents/{document_id}/versions/{version}/source")
+    async def document_source(document_id: int, version: int,
+                              download: bool = Query(False),
+                              principal: Principal = Depends(auditor)):
+        item = next((row for row in database.list_documents()
+                     if row["document_id"] == document_id and row["version"] == version), None)
+        source = _document_source(item) if item else None
+        if item is None or source is None:
+            raise HTTPException(status_code=404, detail="该版本没有可用的原文件")
+        filename = source.name
+        stored_prefix = f"v{version}-"
+        if filename.startswith(stored_prefix):
+            filename = filename[len(stored_prefix):]
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="document_source_download" if download else "document_source_view",
+            target_type="document",
+            target_ref=f"{document_id}:v{version}",
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        if download:
+            return FileResponse(source, media_type=item["mime_type"], filename=filename)
+        return FileResponse(
+            source,
+            media_type=item["mime_type"],
+            headers={"Content-Disposition": f"inline; filename*=UTF-8''{_quoted_filename(filename)}"},
+        )
 
     @application.get("/api/admin/documents/{document_id}/acl")
     async def document_acl(document_id: int, _principal: Principal = Depends(auditor)):
@@ -264,9 +325,14 @@ def create_admin_app(settings: AppSettings | None = None,
 
     @application.get("/api/admin/model-config")
     async def model_config(_principal: Principal = Depends(auditor)):
+        active = models.status()
+        runtime_status = await run_in_threadpool(
+            runtime.status, active, models.base_url({**active, "route": active["mode"]}),
+        )
         return {
             "ok": True,
-            "active": models.status(),
+            "active": active,
+            "runtime": runtime_status,
             "providers": models.catalog(),
             "override": database.runtime_model_config(),
         }
@@ -287,6 +353,22 @@ def create_admin_app(settings: AppSettings | None = None,
                 request_id=request_id_context.get(),
             )
             raise HTTPException(status_code=400, detail=str(exc)) from None
+        try:
+            runtime_status = await run_in_threadpool(
+                runtime.activate,
+                selected,
+                models.base_url({**selected, "route": selected["mode"]}),
+            )
+        except ModelRuntimeError as exc:
+            database.record_audit_event(
+                actor_subject_id=principal.subject_id,
+                action="model_config_update",
+                target_type="model_config",
+                target_ref=target_ref,
+                result="failed",
+                request_id=request_id_context.get(),
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from None
         saved = database.set_runtime_model_config(
             mode=selected["mode"],
             provider=selected["provider"],
@@ -294,7 +376,10 @@ def create_admin_app(settings: AppSettings | None = None,
             actor_subject_id=principal.subject_id,
             request_id=request_id_context.get(),
         )
-        return {"ok": True, "active": models.status(), "override": saved}
+        return {
+            "ok": True, "active": models.status(), "runtime": runtime_status,
+            "override": saved,
+        }
 
     @application.get("/api/admin/artifacts")
     async def list_artifacts(_principal: Principal = Depends(auditor)):
@@ -370,10 +455,17 @@ def create_admin_app(settings: AppSettings | None = None,
                 result = await run_in_threadpool(
                     ingestion.import_file,
                     target,
-                    title=title,
+                    title=title.strip() or Path(filename).stem,
                     source_key=source,
                     access_scope=access_scope,
                     classification=classification,
+                )
+                await run_in_threadpool(
+                    sources.store,
+                    target,
+                    document_id=result["document_id"],
+                    version=result["version"],
+                    filename=filename,
                 )
             database.record_audit_event(
                 actor_subject_id=principal.subject_id,
@@ -398,6 +490,11 @@ def create_admin_app(settings: AppSettings | None = None,
             await file.close()
 
     return application
+
+
+def _quoted_filename(filename: str) -> str:
+    from urllib.parse import quote
+    return quote(filename, safe="")
 
 
 app = create_admin_app()

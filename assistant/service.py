@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from backend import (
@@ -22,6 +23,13 @@ OVERVIEW_PATTERNS = (
     re.compile(r"(?:有什么|有哪些|介绍).*(?:知识|资料|文档)"),
     re.compile(r"^(?:你知道什么|你能回答什么|能问什么)[?？]?$"),
 )
+NAMED_OVERVIEW_PATTERN = re.compile(
+    r"^(?:请问|帮我看看|介绍一下)?(.{2,80}?)(?:这份|这个|这篇)?(?:文档|资料)?"
+    r"(?:主要)?(?:讲了什么|讲什么|说了什么|是什么内容|有哪些内容|内容是什么|主要内容)"
+    r"[?？!！。]*$",
+    re.IGNORECASE,
+)
+GENERIC_DOCUMENT_TITLES = {"document", "untitled", "未命名", "文档"}
 
 
 class ITQueryService:
@@ -69,15 +77,77 @@ class ITQueryService:
         return "query"
 
     @staticmethod
+    def _named_overview_subject(question: str) -> str:
+        normalized = re.sub(r"\s+", "", question.strip())
+        match = NAMED_OVERVIEW_PATTERN.fullmatch(normalized)
+        return match.group(1).strip("：:，,。") if match else ""
+
+    @staticmethod
+    def _match_key(value: str) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", (value or "").lower())
+
+    @classmethod
+    def _document_name_score(cls, subject: str, document: dict) -> float:
+        needle = cls._match_key(subject)
+        if not needle:
+            return 0.0
+        candidates = [document.get("title", "")]
+        sections = document.get("sections") or []
+        if sections:
+            candidates.append(sections[0])
+        best = 0.0
+        for candidate in candidates:
+            candidate_key = cls._match_key(candidate)
+            if not candidate_key:
+                continue
+            if needle in candidate_key or candidate_key in needle:
+                best = max(best, 1.0)
+            best = max(best, SequenceMatcher(None, needle, candidate_key).ratio())
+            latin_words = re.findall(r"[a-z0-9]+", candidate.lower())
+            if latin_words:
+                best = max(
+                    best,
+                    *(SequenceMatcher(None, needle, word).ratio() for word in latin_words),
+                )
+        return best
+
+    @classmethod
+    def _matching_documents(cls, subject: str, documents: list[dict]) -> list[dict]:
+        ranked = sorted(
+            ((cls._document_name_score(subject, item), item) for item in documents),
+            key=lambda item: (-item[0], item[1]["title"]),
+        )
+        if not ranked or ranked[0][0] < 0.78:
+            return []
+        best = ranked[0][0]
+        return [item for score, item in ranked if score >= max(0.78, best - 0.05)][:3]
+
+    @staticmethod
+    def _display_title(document: dict) -> str:
+        title = (document.get("title") or "").strip()
+        sections = document.get("sections") or []
+        if title.lower() in GENERIC_DOCUMENT_TITLES and sections:
+            return sections[0]
+        return title or (sections[0] if sections else "未命名文档")
+
+    @staticmethod
     def _overview_answer(documents: list[dict]) -> str:
         if not documents:
             return "当前没有可供你查询的知识文档。"
         lines = [f"当前可查询 {len(documents)} 份知识文档："]
         for index, document in enumerate(documents, 1):
-            sections = "、".join(document["sections"]) or "正文"
+            display_title = ITQueryService._display_title(document)
+            section_names = list(document["sections"])
+            if (
+                section_names
+                and ITQueryService._match_key(section_names[0])
+                == ITQueryService._match_key(display_title)
+            ):
+                section_names = section_names[1:]
+            sections = "、".join(section_names) or "正文"
             lines.extend((
                 "",
-                f"{index}. {document['title']}（v{document['version']}）",
+                f"{index}. {display_title}（v{document['version']}）",
                 f"   主题：{sections}",
             ))
         return "\n".join(lines)
@@ -93,6 +163,15 @@ class ITQueryService:
         roles = principal.acl_roles if principal else ()
         groups = principal.acl_groups if principal else ()
         intent = self._intent(question)
+        named_overview = self._named_overview_subject(question) if intent == "query" else ""
+        named_documents = []
+        if named_overview:
+            outline = self.database.accessible_document_outline(
+                subject_id=subject_id, roles=roles, groups=groups,
+            )
+            named_documents = self._matching_documents(named_overview, outline)
+            if named_documents:
+                intent = "overview"
         if intent == "greeting":
             evidence = "sufficient"
             answer = (
@@ -101,8 +180,11 @@ class ITQueryService:
             )
             citations = []
         elif intent == "overview":
-            documents = self.database.accessible_document_outline(
-                subject_id=subject_id, roles=roles, groups=groups,
+            documents = (
+                named_documents if named_overview
+                else self.database.accessible_document_outline(
+                    subject_id=subject_id, roles=roles, groups=groups,
+                )
             )
             if not documents:
                 sections = self._sections()
@@ -122,7 +204,7 @@ class ITQueryService:
             for item in documents:
                 if item.get("chunk"):
                     citations.append({
-                        "source": item["title"], "version": item["version"],
+                        "source": self._display_title(item), "version": item["version"],
                         "chunk": item["chunk"], "section": item["section"],
                         "page": item.get("page"),
                     })

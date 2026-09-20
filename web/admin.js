@@ -10,7 +10,7 @@
     system: ['系统状态', '服务依赖与身份上下文'],
   };
   const statusText = { indexed: '已发布', pending: '处理中', failed: '失败', superseded: '已替代' };
-  const actionText = { document_acl_replace: '更新权限', document_import: '导入文档', artifact_create: '生成文件', model_config_update: '切换模型' };
+  const actionText = { document_acl_replace: '更新权限', document_import: '导入文档', document_source_view: '查看原文件', document_source_download: '下载原文件', artifact_create: '生成文件', model_config_update: '切换模型' };
   const typeText = { user: '用户', group: '用户组', role: '角色' };
   const artifactExtensions = { docx: 'docx', pdf: 'pdf', pptx: 'pptx', xlsx: 'xlsx' };
   const artifactPlaceholders = {
@@ -342,6 +342,17 @@
     $('inspectorSource').textContent = item.source_key;
     $('inspectorClass').textContent = item.classification;
     $('inspectorVersion').textContent = `v${item.version} · ${item.versions.length} 个版本`;
+    $('openSource').hidden = !item.source_available;
+    $('downloadSource').hidden = !item.source_available;
+    $('sourceUnavailable').hidden = item.source_available;
+    if (item.source_available) {
+      $('openSource').href = item.source_url;
+      $('downloadSource').href = item.download_url;
+      $('downloadSource').setAttribute('download', item.source_filename || 'document');
+    } else {
+      $('openSource').removeAttribute('href');
+      $('downloadSource').removeAttribute('href');
+    }
     try {
       state.acl = await api(`/api/admin/documents/${item.document_id}/acl`);
       renderAcl();
@@ -506,6 +517,26 @@
     $('activeModel').textContent = `${active.provider} / ${active.model}`;
     $('modelStatus').textContent = active.ready ? '可用' : '未就绪';
     $('modelStatus').className = `status-pill ${active.ready ? 'ok' : 'error'}`;
+    renderModelRuntime(payload.runtime || {});
+  }
+
+  function renderModelRuntime(runtime) {
+    const ready = !!runtime.ready;
+    $('runtimeIndicator').className = ready ? 'ok' : '';
+    $('runtimeTitle').textContent = runtime.message || (ready ? '模型可用' : '模型未启动');
+    const details = [];
+    if (runtime.required === false) details.push(runtime.provider === 'builtin' ? '内置确定性路由' : '按请求连接云服务');
+    if (runtime.service_reachable === true) details.push('服务在线');
+    if (runtime.service_reachable === false) details.push('服务不可达');
+    if (runtime.installed === true) details.push('模型已安装');
+    if (runtime.installed === false && runtime.service_reachable) details.push('模型未安装');
+    if (runtime.loaded === true) details.push('已驻留');
+    if (runtime.loaded === false && runtime.installed) details.push('未驻留');
+    if (Number(runtime.vram_gb || 0) > 0) details.push(`显存 ${Number(runtime.vram_gb).toFixed(2)} GB`);
+    if (runtime.latency_ms) details.push(`验证 ${runtime.latency_ms} ms`);
+    $('runtimeDetail').textContent = details.join(' · ') || `${runtime.provider || '-'} / ${runtime.model || '-'}`;
+    $('modelStatus').textContent = ready ? (runtime.loaded ? '已启动' : '可用') : '未启动';
+    $('modelStatus').className = `status-pill ${ready ? 'ok' : 'error'}`;
   }
 
   async function loadModelConfig(silent = false) {
@@ -524,7 +555,7 @@
     const button = $('saveModel');
     const data = new FormData(event.currentTarget);
     button.disabled = true;
-    button.querySelector('span').textContent = '正在应用';
+    button.querySelector('span').textContent = '正在启动并验证';
     try {
       const result = await api('/api/admin/model-config', {
         method: 'PUT',
@@ -535,7 +566,10 @@
           model: String(data.get('model') || '').trim(),
         }),
       });
-      toast(`已切换到 ${result.active.provider} / ${result.active.model}`);
+      const message = result.runtime?.verified
+        ? `已启动并验证 ${result.active.provider} / ${result.active.model}`
+        : `已切换到 ${result.active.provider} / ${result.active.model}`;
+      toast(message);
       await Promise.all([loadModelConfig(true), loadHealth(), loadAudit(true)]);
     } catch (error) {
       toast(error.message, 'error');
@@ -606,7 +640,7 @@
       if (state.view === 'documents') await loadDocuments();
       if (state.view === 'artifacts') await loadArtifacts();
       if (state.view === 'audit') await loadAudit();
-      if (state.view === 'system') await loadHealth();
+      if (state.view === 'system') await Promise.all([loadHealth(), loadModelConfig(true)]);
     } catch (error) {
       toast(error.message, 'error');
     } finally {
@@ -632,6 +666,7 @@
     $('importForm').addEventListener('submit', submitImport);
     $('artifactForm').addEventListener('submit', submitArtifact);
     $('modelForm').addEventListener('submit', saveModelConfig);
+    $('checkModelRuntime').addEventListener('click', () => loadModelConfig());
     document.querySelectorAll('#modelForm input[name="mode"]').forEach(input => input.addEventListener('change', () => {
       $('modelName').value = '';
       syncModelProvider();
