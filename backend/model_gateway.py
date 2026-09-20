@@ -51,6 +51,7 @@ class ModelGateway:
         self.transport = transport
 
     def complete(self, *, route: dict, base_url: str, api_key: str, question: str,
+                 context: str = "", citations: list[dict] | None = None,
                  request_id: str = "") -> GatewayResult:
         if not base_url.startswith(("http://", "https://")):
             raise ModelGatewayError("model_base_url_invalid", [])
@@ -59,17 +60,27 @@ class ModelGateway:
             headers["Authorization"] = f"Bearer {api_key}"
         if request_id:
             headers["X-Request-ID"] = request_id[:128]
+        citation_hint = "\n".join(
+            f"[{index}] {item.get('source', '内部资料')} / {item.get('section', '')}"
+            for index, item in enumerate(citations or [], 1)
+        )
+        evidence_block = context.strip() or "（没有检索到可供引用的内部资料）"
         payload = {
             "model": route["model"],
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "你是企业 IT 查询助手。只提供排障建议，不执行命令或修改系统。"
-                        "当前内部知识库证据不足，回答时必须明确说明，并要求用户核实高风险操作。"
+                        "你是企业 IT 客服助手，只能基于提供的内部资料回答。"
+                        "不要执行命令或修改系统；资料不足时必须明确说明资料不足。"
+                        "涉及密码、权限、网络配置等高风险操作时，提醒用户先核实。"
+                        "回答要简洁、分步骤，并保留资料引用标记。"
                     ),
                 },
-                {"role": "user", "content": question},
+                {"role": "user", "content": (
+                    f"用户问题：\n{question}\n\n内部知识库资料：\n{evidence_block}"
+                    f"\n\n资料引用：\n{citation_hint or '（无）'}"
+                )},
             ],
             "temperature": self.temperature,
             "max_tokens": self.max_output_tokens,

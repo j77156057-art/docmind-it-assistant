@@ -533,6 +533,7 @@
     const modeInput = document.querySelector(`#modelForm input[name="mode"][value="${active.mode}"]`);
     if (modeInput) modeInput.checked = true;
     $('modelName').value = active.model;
+    $('responseStrategy').value = payload.response_strategy || payload.override?.response_strategy || 'knowledge_first';
     syncModelProvider(active.provider);
     $('activeModel').textContent = `${active.provider} / ${active.model}`;
     $('modelStatus').textContent = active.ready ? '可用' : '未就绪';
@@ -584,6 +585,7 @@
           mode: data.get('mode'),
           provider: data.get('provider'),
           model: String(data.get('model') || '').trim(),
+          response_strategy: data.get('response_strategy') || 'knowledge_first',
         }),
       });
       const message = result.runtime?.verified

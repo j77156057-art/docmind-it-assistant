@@ -104,12 +104,12 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 | `GET/PUT` | `/api/admin/documents/{id}/acl` | auditor/admin | 查看或替换文档 ACL |
 | `POST` | `/api/admin/documents/import` | admin | 导入 Markdown、TXT、PDF、DOCX |
 | `GET/POST` | `/api/admin/artifacts` | auditor/admin | 查看或生成办公产物 |
-| `GET/PUT` | `/api/admin/model-config` | auditor/admin | 查看或切换运行时模型 |
+| `GET/PUT` | `/api/admin/model-config` | auditor/admin | 查看或切换运行时模型与回答策略 |
 | `GET` | `/api/admin/audit-events` | auditor | 查看管理审计记录 |
 
 ## 模型与密钥
 
-知识证据不足时，可路由到 Ollama、llama.cpp 或 OpenAI 兼容云供应商。云端密钥只从进程环境或未提交的 `.env` 读取，不写入数据库、接口响应、页面或审计日志。
+回答策略可在管理后台选择：`knowledge_first`（默认，命中后直接返回知识库）、`generative_first`（先按 ACL 检索，再交给模型组织客服回答）或 `hybrid`（简单问题直接返回，复杂问题生成式回答）。生成式提示词只包含当前用户可见的检索片段，并保留来源引用；模型不可用时会降级为确定性知识答案或安全拒答。知识证据不足时，可路由到 Ollama、llama.cpp 或 OpenAI 兼容云供应商。云端密钥只从进程环境或未提交的 `.env` 读取，不写入数据库、接口响应、页面或审计日志。
 
 管理后台切换到本地模型时，会先执行一次真实的短请求：Ollama 会调用 `/api/generate` 将目标模型加载并确认它出现在 `/api/ps`；llama.cpp 会调用兼容的 `/chat/completions`。探活失败不会保存新配置，系统状态页会显示“服务不可达 / 模型未安装 / 尚未启动 / 已启动”。Ollama 可用 `ollama serve` 启动服务，llama.cpp 需先运行自己的 `llama-server`（默认 `127.0.0.1:8080`）。
 

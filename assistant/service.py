@@ -162,6 +162,7 @@ class ITQueryService:
         )
         roles = principal.acl_roles if principal else ()
         groups = principal.acl_groups if principal else ()
+        answer_context = ""
         intent = self._intent(question)
         named_overview = self._named_overview_subject(question) if intent == "query" else ""
         named_documents = []
@@ -228,6 +229,10 @@ class ITQueryService:
                     "page": item.get("page_number"),
                     "score": round(float(item.get("score") or 0), 6),
                 } for item in imported_hits[:3]]
+                answer_context = "\n\n".join(
+                    f"[{index}] 来源：{item['title']}\n章节：{item['heading']}\n{item['content'][:2500]}"
+                    for index, item in enumerate(imported_hits[:3], 1)
+                )
             else:
                 wanted, ranked = self._terms(question), []
                 for section in self._sections():
@@ -242,22 +247,36 @@ class ITQueryService:
                     answer = "\n\n".join(item["text"] for item in hits)
                     citations = [{"source": self.knowledge_path.name, "section": item["title"],
                                   "line": item["line"]} for item in hits]
+                    answer_context = "\n\n".join(
+                        f"[{index}] 来源：{self.knowledge_path.name}\n章节：{item['title']}\n{item['text'][:2500]}"
+                        for index, item in enumerate(hits, 1)
+                    )
                 else:
                     evidence = "insufficient"
                     answer = "现有资料不足以可靠回答。请补充报错内容、发生时间、设备系统和业务影响。"
                     citations = []
-        model = self.models.select(question, evidence)
+        response_strategy = self.models.response_strategy()
+        model = self.models.select(question, evidence, response_strategy)
         self.database.update_query_route(query_id, model["route"], evidence)
         usage = None
         if model["route"] in {"local", "cloud"}:
             if self.gateway is None:
-                raise ModelGatewayError("model_gateway_unavailable", [])
+                if response_strategy != "generative_first":
+                    raise ModelGatewayError("model_gateway_unavailable", [])
+                answer = answer if evidence == "sufficient" else (
+                    "当前生成式模型暂时不可用，现有资料不足以可靠回答。"
+                    "请补充报错内容、发生时间、设备系统和业务影响。"
+                )
+                return {"query_id": query_id, "answer": answer, "citations": citations,
+                        "evidence": evidence, "model": model, "usage": usage}
             try:
                 result = self.gateway.complete(
                     route=model,
                     base_url=self.models.base_url(model),
                     api_key=self.models.credential(model["provider"]),
                     question=question,
+                    context=answer_context,
+                    citations=citations,
                     request_id=request_id_context.get(),
                 )
             except ModelGatewayError as exc:
@@ -268,16 +287,26 @@ class ITQueryService:
                     LOGGER, logging.WARNING, "model_call_failed",
                     provider=model["provider"], model=model["model"], reason=exc.code,
                 )
-                raise
-            self.database.record_model_attempts(
-                query_id, request_id_context.get(), model, result.attempts,
-            )
-            answer = result.content
-            usage = self.gateway.public_usage(model, result.attempts[-1])
-            log_event(
-                LOGGER, logging.INFO, "model_call_succeeded",
-                provider=model["provider"], model=model["model"],
-                duration_ms=result.attempts[-1].latency_ms,
-            )
+                if response_strategy != "generative_first":
+                    raise
+                log_event(
+                    LOGGER, logging.WARNING, "model_call_degraded",
+                    provider=model["provider"], model=model["model"], reason=exc.code,
+                )
+                answer = answer if evidence == "sufficient" else (
+                    "当前生成式模型暂时不可用，现有资料不足以可靠回答。"
+                    "请补充报错内容、发生时间、设备系统和业务影响。"
+                )
+            else:
+                self.database.record_model_attempts(
+                    query_id, request_id_context.get(), model, result.attempts,
+                )
+                answer = result.content
+                usage = self.gateway.public_usage(model, result.attempts[-1])
+                log_event(
+                    LOGGER, logging.INFO, "model_call_succeeded",
+                    provider=model["provider"], model=model["model"],
+                    duration_ms=result.attempts[-1].latency_ms,
+                )
         return {"query_id": query_id, "answer": answer, "citations": citations,
                 "evidence": evidence, "model": model, "usage": usage}

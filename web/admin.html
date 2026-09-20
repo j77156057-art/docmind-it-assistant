@@ -172,6 +172,11 @@
                 <label><input type="radio" name="mode" value="local"><span>本地</span></label>
                 <label><input type="radio" name="mode" value="cloud"><span>云端</span></label>
               </div></fieldset>
+              <label class="field"><span>回答策略</span><select id="responseStrategy" name="response_strategy">
+                <option value="knowledge_first">知识库优先：命中内容直接返回</option>
+                <option value="generative_first">生成式优先：检索后由模型组织客服回答</option>
+                <option value="hybrid">混合：简单问题直接回答，复杂问题交给模型</option>
+              </select><small class="field-hint">模型只会看到当前用户有权限访问的资料片段。</small></label>
               <label class="field"><span>供应商</span><select id="modelProvider" name="provider"></select></label>
               <label class="field"><span>模型</span><input id="modelName" name="model" list="modelOptions" maxlength="128" required><datalist id="modelOptions"></datalist><small class="field-hint" id="modelOptionsHint">正在读取本机已安装模型…</small></label>
               <dl class="model-details">

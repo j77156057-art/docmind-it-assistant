@@ -152,8 +152,20 @@ class ModelRouter:
             })
         return items
 
-    def select(self, question: str, evidence: str) -> dict:
-        if evidence == "sufficient":
+    def response_strategy(self) -> str:
+        override = self.runtime_loader() if self.runtime_loader else None
+        value = str((override or {}).get("response_strategy", "") or "").strip().lower()
+        if value in {"knowledge_first", "generative_first", "hybrid"}:
+            return value
+        value = os.getenv("IT_RESPONSE_STRATEGY", "knowledge_first").strip().lower()
+        return value if value in {"knowledge_first", "generative_first", "hybrid"} else "knowledge_first"
+
+    def select(self, question: str, evidence: str, response_strategy: str | None = None) -> dict:
+        strategy = response_strategy or self.response_strategy()
+        hybrid_simple = strategy == "hybrid" and evidence == "sufficient" and len((question or "").strip()) <= 18
+        if hybrid_simple and any(token in question for token in ("总结", "为什么", "怎么", "如何", "说明", "处理", "步骤", "建议")):
+            hybrid_simple = False
+        if evidence == "sufficient" and (strategy == "knowledge_first" or hybrid_simple):
             return self._route("knowledge", "builtin", self.builtin_model)
         return self._configured_selection()
 

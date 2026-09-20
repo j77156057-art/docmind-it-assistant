@@ -674,11 +674,13 @@ class QueryDatabase:
             "mode": row.mode,
             "provider": row.provider,
             "model": row.model,
+            "response_strategy": getattr(row, "response_strategy", "knowledge_first") or "knowledge_first",
             "updated_by_subject_id": row.updated_by_subject_id,
             "updated_at": row.updated_at.isoformat(),
         }
 
     def set_runtime_model_config(self, *, mode: str, provider: str, model: str,
+                                 response_strategy: str = "knowledge_first",
                                  actor_subject_id: str, request_id: str) -> dict:
         now = datetime.now(timezone.utc)
         with self._sessions.begin() as session:
@@ -689,6 +691,7 @@ class QueryDatabase:
             row.mode = mode[:16]
             row.provider = provider[:32]
             row.model = model[:128]
+            row.response_strategy = response_strategy[:32]
             row.updated_by_subject_id = actor_subject_id[:64]
             row.updated_at = now
             session.add(AuditEventRecord(

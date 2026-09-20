@@ -172,6 +172,7 @@ class RuntimeModelConfigRecord(Base):
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
+    response_strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="knowledge_first")
     updated_by_subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
