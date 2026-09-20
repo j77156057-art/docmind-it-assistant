@@ -25,6 +25,32 @@ class ITAssistantTests(unittest.TestCase):
             self.assertFalse(hasattr(service, "create_file"))
             self.assertFalse(hasattr(service, "run_command"))
 
+    def test_greeting_and_knowledge_overview_stay_on_builtin_route(self):
+        with tempfile.TemporaryDirectory() as root:
+            knowledge = os.path.join(root, "knowledge.md")
+            with open(knowledge, "w", encoding="utf-8") as stream:
+                stream.write(
+                    "# Demo\n\n> 仅用于演示。\n\n"
+                    "## VPN 连接失败\n同步设备时间。\n\n"
+                    "## 账号锁定与密码\n使用自助解锁。\n"
+                )
+            database = QueryDatabase(os.path.join(root, "queries.db"))
+            service = ITQueryService(
+                knowledge, database,
+                ModelRouter("local", local_provider="ollama", local_model="qwen2.5:7b"),
+            )
+
+            greeting = service.query("intent", "您好！")
+            overview = service.query("intent", "请问知识库里讲了什么")
+
+        self.assertEqual(greeting["model"]["route"], "knowledge")
+        self.assertIsNone(greeting["usage"])
+        self.assertIn("DocMind", greeting["answer"])
+        self.assertEqual(overview["model"]["route"], "knowledge")
+        self.assertIn("VPN 连接失败", overview["answer"])
+        self.assertIn("账号锁定与密码", overview["answer"])
+        self.assertNotIn("仅用于演示", overview["answer"])
+
     def test_http_query_and_model_status(self):
         with TestClient(app) as client:
             self.assertEqual(client.get("/api/runtime/model").status_code, 200)

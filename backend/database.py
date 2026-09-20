@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import datetime, timezone
 import math
 
-from sqlalchemy import case, create_engine, func, inspect, select, text
+from sqlalchemy import and_, case, create_engine, func, inspect, or_, select, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -334,6 +334,73 @@ class QueryDatabase:
         )
         with self._sessions() as session:
             return bool(session.scalar(statement))
+
+    def accessible_document_outline(self, *, subject_id: str = "legacy", roles=(), groups=(),
+                                    max_documents: int = 20,
+                                    max_sections: int = 8) -> list[dict]:
+        """Return an ACL-filtered outline without exposing document contents."""
+        normalized_roles = {str(item).strip().lower() for item in roles if str(item).strip()}
+        normalized_groups = {str(item).strip().lower() for item in groups if str(item).strip()}
+        acl_matches = [and_(
+            DocumentAclRecord.principal_type == "user",
+            DocumentAclRecord.principal_id == subject_id.lower(),
+        )]
+        if normalized_roles:
+            acl_matches.append(and_(
+                DocumentAclRecord.principal_type == "role",
+                DocumentAclRecord.principal_id.in_(normalized_roles),
+            ))
+        if normalized_groups:
+            acl_matches.append(and_(
+                DocumentAclRecord.principal_type == "group",
+                DocumentAclRecord.principal_id.in_(normalized_groups),
+            ))
+        allowed = or_(
+            DocumentRecord.access_scope == "public",
+            select(DocumentAclRecord.id).where(
+                DocumentAclRecord.document_id == DocumentRecord.id,
+                or_(*acl_matches),
+            ).exists(),
+        )
+        document_statement = (
+            select(DocumentRecord, DocumentVersionRecord)
+            .join(DocumentVersionRecord, DocumentVersionRecord.document_id == DocumentRecord.id)
+            .where(DocumentVersionRecord.status == "indexed", allowed)
+            .order_by(DocumentRecord.title, DocumentRecord.id)
+            .limit(max(1, min(int(max_documents), 100)))
+        )
+        with self._sessions() as session:
+            documents = session.execute(document_statement).all()
+            version_ids = [version.id for _, version in documents]
+            chunks = session.execute(
+                select(DocumentChunkRecord)
+                .where(DocumentChunkRecord.document_version_id.in_(version_ids))
+                .order_by(DocumentChunkRecord.document_version_id, DocumentChunkRecord.ordinal)
+            ).scalars().all() if version_ids else []
+        chunks_by_version: dict[int, list[DocumentChunkRecord]] = {}
+        for chunk in chunks:
+            chunks_by_version.setdefault(chunk.document_version_id, []).append(chunk)
+        result = []
+        section_limit = max(1, min(int(max_sections), 50))
+        for document, version in documents:
+            headings, first_chunks = [], {}
+            for chunk in chunks_by_version.get(version.id, []):
+                heading = (chunk.heading or "正文").strip()
+                if heading not in first_chunks:
+                    headings.append(heading)
+                    first_chunks[heading] = chunk
+                if len(headings) >= section_limit:
+                    break
+            first = first_chunks.get(headings[0]) if headings else None
+            result.append({
+                "title": document.title,
+                "version": version.version,
+                "sections": headings,
+                "chunk": (first.ordinal + 1) if first else None,
+                "section": headings[0] if headings else "",
+                "page": first.page_number if first else None,
+            })
+        return result
 
     def hybrid_search(self, query: str, embedding: list[float], limit: int = 5,
                       *, subject_id: str = "legacy", roles=(), groups=()) -> list[dict]:

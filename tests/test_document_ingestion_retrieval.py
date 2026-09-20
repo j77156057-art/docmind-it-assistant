@@ -7,7 +7,7 @@ from docx import Document as DocxDocument
 from pypdf import PdfWriter
 
 from assistant import ITQueryService
-from backend import HybridRetriever, ModelRouter, QueryDatabase
+from backend import HybridRetriever, ModelRouter, Principal, QueryDatabase
 from backend.embeddings import EmbeddingClient, EmbeddingError
 from ingestion import DocumentIngestionService
 from ingestion.parsers import parse_document
@@ -82,6 +82,48 @@ class DocumentIngestionRetrievalTests(unittest.TestCase):
             parsed = parse_document(path, max_bytes=1024 * 1024)
         self.assertEqual(parsed.sections[0].heading, "打印机故障")
         self.assertIn("清除卡纸", parsed.sections[0].text)
+
+    def test_knowledge_overview_respects_document_acl(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = Path(root)
+            public_path = project / "public.md"
+            public_path.write_text("# 公共手册\n## VPN 使用\n连接说明。\n", encoding="utf-8")
+            private_path = project / "private.md"
+            private_path.write_text("# 私密手册\n## 薪酬系统\n内部说明。\n", encoding="utf-8")
+            database = self.make_database(root)
+            embeddings = EmbeddingClient(
+                mode="hash", provider="builtin", model="hash-1024",
+                base_url="", api_key="",
+            )
+            ingestion = self.make_ingestion(database, embeddings)
+            ingestion.import_file(
+                public_path, title="公共手册", source_key="public", access_scope="public",
+            )
+            private = ingestion.import_file(
+                private_path, title="私密手册", source_key="private", access_scope="restricted",
+            )
+            service = ITQueryService(
+                str(project / "missing.md"), database,
+                ModelRouter("local", local_provider="ollama", local_model="qwen2.5:7b"),
+                retriever=HybridRetriever(database, embeddings),
+            )
+            principal = Principal("viewer-1", frozenset({"viewer"}), frozenset())
+
+            result = service.query("overview", "文档库有哪些内容？", principal)
+            database.set_document_acl(
+                private["document_id"], [("user", "viewer-1")],
+                actor_subject_id="admin-1", request_id="overview-acl",
+            )
+            authorized = service.query("overview-authorized", "知识库包含哪些内容？", principal)
+            database.dispose()
+
+        self.assertEqual(result["model"]["route"], "knowledge")
+        self.assertIn("公共手册", result["answer"])
+        self.assertIn("VPN 使用", result["answer"])
+        self.assertNotIn("私密手册", result["answer"])
+        self.assertEqual([item["source"] for item in result["citations"]], ["公共手册"])
+        self.assertIn("私密手册", authorized["answer"])
+        self.assertIn("薪酬系统", authorized["answer"])
 
     def test_password_protected_pdf_is_rejected_cleanly(self):
         with tempfile.TemporaryDirectory() as root:
