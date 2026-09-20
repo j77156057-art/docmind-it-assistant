@@ -17,5 +17,57 @@ services:
       retries: 10
       start_period: 10s
 
+  migrate:
+    build: .
+    environment: &application-environment
+      IT_ENVIRONMENT: development
+      IT_DATABASE_URL: postgresql+psycopg://docmind:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-docmind_it}
+      IT_AUTH_MODE: development
+      IT_AUTH_SUBJECT_SALT: development-only
+      IT_EMBEDDING_MODE: hash
+      IT_ARTIFACT_OUTPUT_PATH: /app/data/artifacts
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  query:
+    build: .
+    environment: *application-environment
+    command: ["python", "-B", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8020", "--no-access-log"]
+    ports:
+      - "127.0.0.1:8020:8020"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  admin:
+    build: .
+    environment: *application-environment
+    command: ["python", "-B", "-m", "uvicorn", "admin_app:app", "--host", "0.0.0.0", "--port", "8021", "--no-access-log"]
+    ports:
+      - "127.0.0.1:8021:8021"
+    volumes:
+      - docmind_artifacts:/app/data/artifacts
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8021/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
 volumes:
   docmind_it_postgres:
+  docmind_artifacts:

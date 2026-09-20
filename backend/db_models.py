@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 from pgvector.sqlalchemy import Vector
@@ -35,6 +35,7 @@ class QueryRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    owner_subject_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     evidence: Mapped[str] = mapped_column(String(32), nullable=False)
     model_route: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -82,6 +83,8 @@ class DocumentRecord(Base):
     source_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    access_scope: Mapped[str] = mapped_column(String(16), nullable=False, default="restricted")
+    classification: Mapped[str] = mapped_column(String(32), nullable=False, default="internal")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
     )
@@ -130,4 +133,61 @@ class DocumentChunkRecord(Base):
     embedding: Mapped[list[float]] = mapped_column(EmbeddingVector(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class DocumentAclRecord(Base):
+    __tablename__ = "document_acl"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id", "principal_type", "principal_id", name="uq_document_acl_principal",
+        ),
+        CheckConstraint(
+            "principal_type IN ('user', 'group', 'role')", name="ck_document_acl_principal_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    principal_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    principal_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_by_subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class RuntimeModelConfigRecord(Base):
+    __tablename__ = "runtime_model_config"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_runtime_model_config_singleton"),
+        CheckConstraint(
+            "mode IN ('knowledge', 'local', 'cloud')", name="ck_runtime_model_config_mode",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    updated_by_subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class AuditEventRecord(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_subject_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    result: Mapped[str] = mapped_column(String(16), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True,
     )

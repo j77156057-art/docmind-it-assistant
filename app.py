@@ -6,15 +6,15 @@ import re
 import time
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from assistant import ITQueryService
 from backend import (
-    AppSettings, EmbeddingClient, HybridRetriever, ModelGateway, ModelGatewayError,
-    ModelRouter, QueryDatabase, build_embedding_client, configure_logging, log_event,
-    request_id_context,
+    AppSettings, AuthenticationError, EmbeddingClient, HybridRetriever, ModelGateway,
+    ModelGatewayError, ModelRouter, OIDCAuthenticator, Principal, QueryDatabase,
+    build_embedding_client, configure_logging, log_event, request_id_context,
 )
 
 
@@ -38,18 +38,8 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         pool_timeout=config.database_pool_timeout,
         connect_timeout=config.database_connect_timeout,
     )
-    models = ModelRouter(
-        config.model_mode,
-        local_provider=config.local_provider,
-        local_model=config.local_model,
-        cloud_provider=config.cloud_provider,
-        cloud_model=config.cloud_model,
-        builtin_model=config.builtin_model,
-        configured_credentials=config.configured_credentials,
-        credentials={name: config.credential_value(name) for name in config.configured_credentials},
-        cloud_base_url=config.cloud_base_url,
-        local_base_url=config.local_base_url,
-        custom_base_url=config.custom_base_url,
+    models = ModelRouter.from_settings(
+        config, runtime_loader=database.runtime_model_config,
     )
     gateway = model_gateway or ModelGateway(
         timeout_seconds=config.model_timeout_seconds,
@@ -61,6 +51,16 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
     embeddings = embedding_client or build_embedding_client(config)
     retriever = HybridRetriever(database, embeddings, top_k=config.retrieval_top_k)
     service = ITQueryService(str(config.knowledge_path), database, models, gateway, retriever)
+    authenticator = OIDCAuthenticator(
+        mode=config.auth_mode,
+        issuer=config.oidc_issuer,
+        audience=config.oidc_audience,
+        jwks_url=config.oidc_jwks_url,
+        subject_salt=config.auth_subject_salt.get_secret_value(),
+        role_claim=config.oidc_role_claim,
+        group_claim=config.oidc_group_claim,
+        leeway_seconds=config.oidc_leeway_seconds,
+    )
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
@@ -82,6 +82,40 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
     application.state.embeddings = embeddings
     application.state.retriever = retriever
     application.state.service = service
+    application.state.authenticator = authenticator
+
+    @application.exception_handler(HTTPException)
+    async def http_error(_request: Request, exc: HTTPException):
+        return JSONResponse(
+            {"ok": False, "error": str(exc.detail)},
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
+    def authenticated(request: Request) -> Principal:
+        try:
+            return authenticator.authenticate(request.headers)
+        except AuthenticationError as exc:
+            log_event(LOGGER, logging.WARNING, "authentication_failed", reason=exc.code)
+            raise HTTPException(
+                status_code=401,
+                detail="未认证或登录已失效",
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from None
+
+    def require_role(role: str):
+        def authorize(principal: Principal = Depends(authenticated)) -> Principal:
+            if not principal.allows(role):
+                log_event(
+                    LOGGER, logging.WARNING, "authorization_denied", required_role=role,
+                    actor_subject_id=principal.subject_id,
+                )
+                raise HTTPException(status_code=403, detail="权限不足")
+            return principal
+        return authorize
+
+    viewer = require_role("viewer")
+    auditor = require_role("auditor")
 
     @application.middleware("http")
     async def request_logging(request: Request, call_next):
@@ -126,6 +160,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         database_ok, database_reason = database.healthcheck()
         model_ok, model_reason = models.healthcheck()
         embedding_ok, embedding_reason = retriever.healthcheck()
+        auth_ok, auth_reason = authenticator.healthcheck()
         knowledge_ok = config.knowledge_path.is_file()
         web_ok = config.web_index_path.is_file()
         checks = {
@@ -134,6 +169,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
             "web": {"ok": web_ok, "reason": "ok" if web_ok else "web_index_missing"},
             "model": {"ok": model_ok, "reason": model_reason},
             "embedding": {"ok": embedding_ok, "reason": embedding_reason},
+            "authentication": {"ok": auth_ok, "reason": auth_reason},
         }
         ready = all(item["ok"] for item in checks.values())
         return JSONResponse(
@@ -142,29 +178,48 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         )
 
     @application.post("/api/query")
-    def query(req: QueryReq):
+    def query(req: QueryReq, principal: Principal = Depends(viewer)):
         try:
-            return {"ok": True, **service.query(req.session_id, req.question)}
+            return {"ok": True, **service.query(req.session_id, req.question, principal)}
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         except ModelGatewayError:
             return JSONResponse({"ok": False, "error": "模型服务暂时不可用，请稍后重试"}, status_code=502)
 
     @application.get("/api/history")
-    async def history(session_id: str = "default", limit: int = 20):
-        return {"ok": True, "items": database.history(session_id, limit)}
+    async def history(session_id: str = "default", limit: int = 20,
+                      principal: Principal = Depends(viewer)):
+        return {"ok": True, "items": database.history(
+            session_id, limit, owner_subject_id=principal.subject_id,
+        )}
+
+    @application.get("/api/me")
+    async def me(principal: Principal = Depends(authenticated)):
+        return {
+            "ok": True,
+            "subject_id": principal.subject_id,
+            "display_name": principal.display_name,
+            "roles": sorted(principal.roles),
+            "groups": sorted(principal.groups),
+        }
 
     @application.get("/api/runtime/model")
-    async def model_status():
+    async def model_status(_principal: Principal = Depends(viewer)):
         return {"ok": True, **models.status()}
 
     @application.get("/api/usage/summary")
-    async def usage_summary(session_id: str = "default"):
-        return {"ok": True, **database.usage_summary(session_id)}
+    async def usage_summary(session_id: str = "default",
+                            principal: Principal = Depends(viewer)):
+        return {"ok": True, **database.usage_summary(
+            session_id, owner_subject_id=principal.subject_id,
+        )}
 
     @application.get("/api/usage/ledger")
-    async def usage_ledger(session_id: str = "default", limit: int = 50):
-        return {"ok": True, "items": database.usage_ledger(session_id, limit)}
+    async def usage_ledger(session_id: str = "default", limit: int = 50,
+                           principal: Principal = Depends(auditor)):
+        return {"ok": True, "items": database.usage_ledger(
+            session_id, limit, owner_subject_id=principal.subject_id,
+        )}
 
     return application
 

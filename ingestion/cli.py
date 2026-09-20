@@ -17,6 +17,8 @@ def main() -> int:
     importer.add_argument("path")
     importer.add_argument("--title", default="")
     importer.add_argument("--source-key", default="")
+    importer.add_argument("--access-scope", choices=("public", "restricted"), default="restricted")
+    importer.add_argument("--classification", default="internal")
     subcommands.add_parser("list", help="List imported document versions")
     args = parser.parse_args()
 
@@ -43,6 +45,7 @@ def main() -> int:
             )
             result = {"ok": True, **service.import_file(
                 args.path, title=args.title, source_key=args.source_key,
+                access_scope=args.access_scope, classification=args.classification,
             )}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0

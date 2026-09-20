@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
 
@@ -46,6 +47,16 @@ def _bool(value: str | bool) -> bool:
     raise ValueError(f"非法布尔配置：{value}")
 
 
+def _is_loopback_host(value: str) -> bool:
+    normalized = value.strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
 class AppSettings(BaseModel):
     """All non-secret runtime configuration used by the query application."""
 
@@ -56,6 +67,8 @@ class AppSettings(BaseModel):
     environment: Literal["development", "test", "production"] = "development"
     host: str = "127.0.0.1"
     port: int = 8020
+    admin_host: str = "127.0.0.1"
+    admin_port: int = 8021
     database_path: Path = PROJECT_ROOT / "data" / "queries.db"
     database_url: str = Field(
         default=f"sqlite:///{(PROJECT_ROOT / 'data' / 'queries.db').as_posix()}",
@@ -68,6 +81,8 @@ class AppSettings(BaseModel):
     database_connect_timeout: int = Field(default=5, ge=1, le=60)
     knowledge_path: Path = PROJECT_ROOT / "knowledge.md"
     web_index_path: Path = PROJECT_ROOT / "web" / "index.html"
+    admin_index_path: Path = PROJECT_ROOT / "web" / "admin.html"
+    artifact_output_path: Path = PROJECT_ROOT / "data" / "artifacts"
     model_mode: Literal["knowledge", "local", "cloud"] = "knowledge"
     local_provider: str = "ollama"
     local_model: str = ""
@@ -95,6 +110,16 @@ class AppSettings(BaseModel):
     chunk_max_chars: int = Field(default=1200, ge=200, le=8000)
     chunk_overlap_chars: int = Field(default=150, ge=0, le=2000)
     retrieval_top_k: int = Field(default=5, ge=1, le=20)
+    auth_mode: Literal["development", "trusted_headers", "oidc"] = "development"
+    oidc_issuer: str = ""
+    oidc_audience: str = ""
+    oidc_jwks_url: str = ""
+    oidc_role_claim: str = "roles"
+    oidc_group_claim: str = "groups"
+    oidc_leeway_seconds: int = Field(default=30, ge=0, le=300)
+    auth_subject_salt: SecretStr = Field(
+        default=SecretStr("development-only"), exclude=True, repr=False,
+    )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_json: bool = True
     configured_credentials: frozenset[str] = Field(
@@ -109,7 +134,14 @@ class AppSettings(BaseModel):
             raise ValueError("IT_PORT 必须在 1 到 65535 之间")
         return value
 
-    @field_validator("host")
+    @field_validator("admin_port")
+    @classmethod
+    def validate_admin_port(cls, value: int) -> int:
+        if not 1 <= value <= 65535:
+            raise ValueError("IT_ADMIN_PORT 必须在 1 到 65535 之间")
+        return value
+
+    @field_validator("host", "admin_host")
     @classmethod
     def validate_host(cls, value: str) -> str:
         value = value.strip()
@@ -129,6 +161,23 @@ class AppSettings(BaseModel):
             raise ValueError("IT_EMBEDDING_DIMENSION 必须为当前索引维度 1024")
         if self.chunk_overlap_chars >= self.chunk_max_chars:
             raise ValueError("IT_CHUNK_OVERLAP_CHARS 必须小于 IT_CHUNK_MAX_CHARS")
+        if self.auth_mode == "development" and not (
+            _is_loopback_host(self.host) and _is_loopback_host(self.admin_host)
+        ):
+            raise ValueError("development 认证只能监听本机回环地址")
+        if self.environment == "production" and self.auth_mode != "oidc":
+            raise ValueError("生产环境 IT_AUTH_MODE 必须使用 oidc")
+        if self.auth_mode == "oidc":
+            if not self.oidc_issuer.startswith("https://"):
+                raise ValueError("OIDC 签发方必须使用 HTTPS")
+            if not self.oidc_audience:
+                raise ValueError("IT_OIDC_AUDIENCE 不能为空")
+            if not self.oidc_jwks_url.startswith("https://"):
+                raise ValueError("OIDC JWKS 地址必须使用 HTTPS")
+            if not self.auth_subject_salt.get_secret_value():
+                raise ValueError("IT_AUTH_SUBJECT_SALT 不能为空")
+        if self.environment == "production" and len(self.auth_subject_salt.get_secret_value()) < 32:
+            raise ValueError("生产环境 IT_AUTH_SUBJECT_SALT 至少需要 32 个字符")
         return self
 
     @classmethod
@@ -157,6 +206,8 @@ class AppSettings(BaseModel):
             environment=read("IT_ENVIRONMENT", "development").strip().lower(),
             host=read("IT_HOST", "127.0.0.1"),
             port=int(read("IT_PORT", "8020")),
+            admin_host=read("IT_ADMIN_HOST", "127.0.0.1"),
+            admin_port=int(read("IT_ADMIN_PORT", "8021")),
             database_path=database_path,
             database_url=read("IT_DATABASE_URL", default_database_url).strip(),
             database_pool_size=int(read("IT_DB_POOL_SIZE", "5")),
@@ -165,6 +216,8 @@ class AppSettings(BaseModel):
             database_connect_timeout=int(read("IT_DB_CONNECT_TIMEOUT", "5")),
             knowledge_path=path_value("IT_KNOWLEDGE_PATH", Path("knowledge.md")),
             web_index_path=path_value("IT_WEB_INDEX_PATH", Path("web/index.html")),
+            admin_index_path=path_value("IT_ADMIN_INDEX_PATH", Path("web/admin.html")),
+            artifact_output_path=path_value("IT_ARTIFACT_OUTPUT_PATH", Path("data/artifacts")),
             model_mode=read("IT_MODEL_MODE", "knowledge").strip().lower(),
             local_provider=read("IT_LOCAL_PROVIDER", "ollama").strip().lower(),
             local_model=read("IT_LOCAL_MODEL", "").strip(),
@@ -192,6 +245,14 @@ class AppSettings(BaseModel):
             chunk_max_chars=int(read("IT_CHUNK_MAX_CHARS", "1200")),
             chunk_overlap_chars=int(read("IT_CHUNK_OVERLAP_CHARS", "150")),
             retrieval_top_k=int(read("IT_RETRIEVAL_TOP_K", "5")),
+            auth_mode=read("IT_AUTH_MODE", "development").strip().lower(),
+            oidc_issuer=read("IT_OIDC_ISSUER", "").strip(),
+            oidc_audience=read("IT_OIDC_AUDIENCE", "").strip(),
+            oidc_jwks_url=read("IT_OIDC_JWKS_URL", "").strip(),
+            oidc_role_claim=read("IT_OIDC_ROLE_CLAIM", "roles").strip(),
+            oidc_group_claim=read("IT_OIDC_GROUP_CLAIM", "groups").strip(),
+            oidc_leeway_seconds=int(read("IT_OIDC_LEEWAY_SECONDS", "30")),
+            auth_subject_salt=SecretStr(read("IT_AUTH_SUBJECT_SALT", "development-only")),
             log_level=read("IT_LOG_LEVEL", "INFO").strip().upper(),
             log_json=_bool(read("IT_LOG_JSON", "true")),
             configured_credentials=frozenset(credential_values),
@@ -213,7 +274,10 @@ class AppSettings(BaseModel):
             "environment": self.environment,
             "host": self.host,
             "port": self.port,
+            "admin_host": self.admin_host,
+            "admin_port": self.admin_port,
             "model_mode": self.model_mode,
+            "auth_mode": self.auth_mode,
             "log_level": self.log_level,
             "log_json": self.log_json,
         }

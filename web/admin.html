@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>DocMind 管理控制台</title>
+  <link rel="stylesheet" href="/assets/admin.css">
+</head>
+<body>
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="i-library" viewBox="0 0 24 24"><path d="m16 6 4 14M12 6v14M8 8v12M4 4v16"/><path d="M2 20h20"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-audit" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 16 4-5 4 3 5-7"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 21h14a2 2 0 0 0 2-2v-4M3 15v4a2 2 0 0 0 2 2"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v6h-6M4 18v-6h6"/><path d="M18.5 9a7 7 0 0 0-12-2.5L4 9m2 6a7 7 0 0 0 12 2.5L20 15"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3-1.6 4.4L6 9l4.4 1.6L12 15l1.6-4.4L18 9l-4.4-1.6z"/><path d="m19 14-.9 2.1L16 17l2.1.9L19 20l.9-2.1L22 17l-2.1-.9zM5 3l.7 1.3L7 5l-1.3.7L5 7l-.7-1.3L3 5l1.3-.7z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2"/></symbol>
+  </svg>
+
+  <button class="sidebar-scrim" id="sidebarScrim" aria-label="关闭导航"></button>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="brand-mark"><svg><use href="#i-library"/></svg></span>
+        <span><strong>DocMind</strong><small>管理控制台</small></span>
+      </div>
+      <nav class="nav" aria-label="管理导航">
+        <button class="nav-item active" data-view="documents"><svg><use href="#i-file"/></svg><span>文档库</span></button>
+        <button class="nav-item" data-view="artifacts"><svg><use href="#i-sparkles"/></svg><span>文档生成</span></button>
+        <button class="nav-item" data-view="audit"><svg><use href="#i-audit"/></svg><span>审计记录</span></button>
+        <button class="nav-item" data-view="system"><svg><use href="#i-activity"/></svg><span>系统状态</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="environment">管理服务</span>
+        <span class="service-dot" id="serviceDot"></span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-button mobile-only" id="menuButton" aria-label="打开导航" title="打开导航"><svg><use href="#i-menu"/></svg></button>
+        <div class="page-heading">
+          <h1 id="pageTitle">文档库</h1>
+          <p id="pageSubtitle">版本、发布状态与访问权限</p>
+        </div>
+        <div class="top-actions">
+          <button class="icon-button" id="refreshButton" aria-label="刷新" title="刷新"><svg><use href="#i-refresh"/></svg></button>
+          <span class="role-badge" id="roleBadge">连接中</span>
+          <div class="identity" title="当前用户">
+            <span class="avatar" id="avatar">--</span>
+            <span class="identity-copy"><strong id="displayName">正在验证</strong><small id="subjectId">身份服务</small></span>
+          </div>
+        </div>
+      </header>
+
+      <section class="view active" id="view-documents">
+        <div class="metrics" aria-label="文档概览">
+          <div class="metric"><span>文档</span><strong id="metricDocuments">0</strong></div>
+          <div class="metric"><span>已发布版本</span><strong id="metricIndexed">0</strong></div>
+          <div class="metric"><span>受限文档</span><strong id="metricRestricted">0</strong></div>
+          <div class="metric"><span>知识块</span><strong id="metricChunks">0</strong></div>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-box">
+            <svg><use href="#i-search"/></svg>
+            <span class="sr-only">搜索文档</span>
+            <input id="documentSearch" type="search" placeholder="搜索标题或来源">
+          </label>
+          <label class="filter-field"><span class="sr-only">访问范围</span><select id="scopeFilter"><option value="all">全部范围</option><option value="restricted">仅受限</option><option value="public">仅公开</option></select></label>
+          <button class="primary-button admin-only" id="openImport"><svg><use href="#i-upload"/></svg><span>导入文档</span></button>
+        </div>
+
+        <div class="content-grid" id="documentGrid">
+          <div class="table-region">
+            <table class="data-table">
+              <thead><tr><th>文档</th><th>当前版本</th><th>状态</th><th>访问范围</th><th>知识块</th><th><span class="sr-only">操作</span></th></tr></thead>
+              <tbody id="documentRows"></tbody>
+            </table>
+            <div class="empty-state" id="documentEmpty" hidden><svg><use href="#i-file"/></svg><strong>没有匹配的文档</strong></div>
+          </div>
+
+          <aside class="inspector" id="inspector" aria-label="文档权限" hidden>
+            <div class="inspector-head">
+              <div><span class="eyebrow">文档权限</span><h2 id="inspectorTitle">-</h2></div>
+              <button class="icon-button" id="closeInspector" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button>
+            </div>
+            <dl class="document-meta">
+              <div><dt>来源</dt><dd id="inspectorSource">-</dd></div>
+              <div><dt>分类</dt><dd id="inspectorClass">-</dd></div>
+              <div><dt>版本</dt><dd id="inspectorVersion">-</dd></div>
+            </dl>
+            <form id="aclForm">
+              <fieldset>
+                <legend>访问范围</legend>
+                <div class="segmented">
+                  <label><input type="radio" name="access_scope" value="restricted"><span><svg><use href="#i-lock"/></svg>受限</span></label>
+                  <label><input type="radio" name="access_scope" value="public"><span><svg><use href="#i-globe"/></svg>公开</span></label>
+                </div>
+              </fieldset>
+              <div class="acl-heading"><label>授权主体</label><button type="button" class="text-button admin-only" id="addAcl"><svg><use href="#i-plus"/></svg>添加</button></div>
+              <div class="acl-list" id="aclList"></div>
+              <div class="acl-empty" id="aclEmpty" hidden>未配置授权主体</div>
+              <div class="inspector-actions admin-only"><button type="submit" class="primary-button" id="saveAcl"><svg><use href="#i-shield"/></svg><span>保存权限</span></button></div>
+            </form>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-artifacts">
+        <div class="artifact-layout">
+          <section class="artifact-editor admin-only">
+            <div class="section-title"><div><span class="eyebrow">办公产物</span><h2>创建文件</h2></div><span class="status-pill">受控生成</span></div>
+            <form id="artifactForm" class="artifact-form">
+              <fieldset class="artifact-format"><legend>格式</legend><div class="format-segmented">
+                <label><input type="radio" name="format" value="docx" checked><span>Word</span></label>
+                <label><input type="radio" name="format" value="pdf"><span>PDF</span></label>
+                <label><input type="radio" name="format" value="pptx"><span>PPT</span></label>
+                <label><input type="radio" name="format" value="xlsx"><span>Excel</span></label>
+              </div></fieldset>
+              <label class="field"><span>标题</span><input id="artifactTitle" name="title" maxlength="512" required></label>
+              <label class="field"><span>副标题</span><input name="subtitle" maxlength="1024"></label>
+              <label class="field"><span>文件名</span><input id="artifactFilename" name="filename" value="document.docx" maxlength="128" required></label>
+              <label class="field artifact-content"><span>内容</span><textarea id="artifactContent" name="content" maxlength="200000" required></textarea></label>
+              <div class="artifact-submit"><button type="submit" class="primary-button" id="submitArtifact"><svg><use href="#i-sparkles"/></svg><span>生成文件</span></button></div>
+            </form>
+          </section>
+
+          <section class="artifact-library">
+            <div class="section-title"><div><span class="eyebrow">可下载</span><h2>最近产物</h2></div><span class="artifact-count" id="artifactCount">0 个</span></div>
+            <div class="table-region artifact-table-region">
+              <table class="data-table artifact-table"><thead><tr><th>文件</th><th>格式</th><th>大小</th><th>创建时间</th><th><span class="sr-only">下载</span></th></tr></thead><tbody id="artifactRows"></tbody></table>
+              <div class="empty-state" id="artifactEmpty"><svg><use href="#i-sparkles"/></svg><strong>暂无生成文件</strong></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-audit">
+        <div class="section-bar"><div><strong>最近操作</strong><span id="auditCount">0 条</span></div><label class="filter-field"><span class="sr-only">结果</span><select id="auditFilter"><option value="all">全部结果</option><option value="success">成功</option><option value="failed">失败</option></select></label></div>
+        <div class="table-region">
+          <table class="data-table audit-table"><thead><tr><th>时间</th><th>操作</th><th>目标</th><th>操作者</th><th>结果</th><th>请求 ID</th></tr></thead><tbody id="auditRows"></tbody></table>
+          <div class="empty-state" id="auditEmpty" hidden><svg><use href="#i-audit"/></svg><strong>暂无审计记录</strong></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-system">
+        <div class="system-layout">
+          <section class="status-section"><div class="section-title"><div><span class="eyebrow">运行状态</span><h2>管理服务</h2></div><span class="status-pill" id="overallStatus">检查中</span></div><div class="check-list" id="healthChecks"></div></section>
+          <section class="status-section"><div class="section-title"><div><span class="eyebrow">当前身份</span><h2>权限上下文</h2></div></div><dl class="identity-details"><div><dt>匿名主体</dt><dd id="systemSubject">-</dd></div><div><dt>角色</dt><dd id="systemRoles">-</dd></div><div><dt>用户组</dt><dd id="systemGroups">-</dd></div></dl></section>
+          <section class="status-section model-section">
+            <div class="section-title"><div><span class="eyebrow">回答路由</span><h2>模型配置</h2></div><span class="status-pill" id="modelStatus">检查中</span></div>
+            <form id="modelForm" class="model-form">
+              <fieldset class="model-mode"><legend>模式</legend><div class="format-segmented model-mode-options">
+                <label><input type="radio" name="mode" value="knowledge"><span>知识库</span></label>
+                <label><input type="radio" name="mode" value="local"><span>本地</span></label>
+                <label><input type="radio" name="mode" value="cloud"><span>云端</span></label>
+              </div></fieldset>
+              <label class="field"><span>供应商</span><select id="modelProvider" name="provider"></select></label>
+              <label class="field"><span>模型</span><input id="modelName" name="model" maxlength="128" required></label>
+              <dl class="model-details">
+                <div><dt>当前生效</dt><dd id="activeModel">-</dd></div>
+                <div><dt>上下文</dt><dd id="modelContext">-</dd></div>
+                <div><dt>访问凭据</dt><dd id="modelCredential">-</dd></div>
+              </dl>
+              <div class="model-actions admin-only"><button type="submit" class="primary-button" id="saveModel"><svg><use href="#i-activity"/></svg><span>应用配置</span></button></div>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="importDialog">
+    <form method="dialog" id="importForm">
+      <div class="dialog-head"><div><span class="eyebrow">知识库</span><h2>导入文档</h2></div><button type="button" class="icon-button" id="closeImport" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+      <label class="file-drop" id="fileDrop"><input type="file" id="importFile" name="file" accept=".md,.txt,.pdf,.docx" required><svg><use href="#i-upload"/></svg><strong id="fileLabel">选择文档</strong><span>Markdown、TXT、PDF、DOCX</span></label>
+      <div class="form-grid">
+        <label class="field"><span>标题</span><input name="title" maxlength="512"></label>
+        <label class="field"><span>来源标识</span><input name="source_key" maxlength="512"></label>
+        <label class="field"><span>分类</span><select name="classification"><option value="internal">内部</option><option value="confidential">机密</option><option value="public">公开</option></select></label>
+        <fieldset class="field"><legend>访问范围</legend><div class="segmented"><label><input type="radio" name="access_scope" value="restricted" checked><span><svg><use href="#i-lock"/></svg>受限</span></label><label><input type="radio" name="access_scope" value="public"><span><svg><use href="#i-globe"/></svg>公开</span></label></div></fieldset>
+      </div>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelImport">取消</button><button type="submit" class="primary-button" id="submitImport"><svg><use href="#i-upload"/></svg><span>开始导入</span></button></div>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toasts" aria-live="polite"></div>
+  <script src="/assets/admin.js" defer></script>
+</body>
+</html>

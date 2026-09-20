@@ -1,4 +1,5 @@
 from .config import AppSettings
+from .auth import AuthenticationError, OIDCAuthenticator, Principal, subject_identifier
 from .database import QueryDatabase
 from .embeddings import EmbeddingClient, EmbeddingError, EmbeddingResult, build_embedding_client
 from .logging_config import JsonFormatter, configure_logging, log_event, request_id_context
@@ -9,10 +10,11 @@ from .pricing import cost_cny, price_for
 from .providers import PROVIDERS, ProviderSpec, get_provider, model_context_window
 
 __all__ = [
-    "AppSettings", "ModelRouter", "QueryDatabase", "PROVIDERS", "ProviderSpec",
+    "AppSettings", "AuthenticationError", "OIDCAuthenticator", "Principal",
+    "ModelRouter", "QueryDatabase", "PROVIDERS", "ProviderSpec",
     "JsonFormatter", "configure_logging", "log_event", "request_id_context",
     "GatewayAttempt", "GatewayResult", "ModelGateway", "ModelGatewayError",
     "EmbeddingClient", "EmbeddingError", "EmbeddingResult", "build_embedding_client",
     "HybridRetriever",
-    "cost_cny", "get_provider", "model_context_window", "price_for",
+    "cost_cny", "get_provider", "model_context_window", "price_for", "subject_identifier",
 ]

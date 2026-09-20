@@ -15,8 +15,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from .db_models import (
-    Base, DocumentChunkRecord, DocumentRecord, DocumentVersionRecord,
-    ModelUsageRecord, QueryRecord,
+    AuditEventRecord, Base, DocumentAclRecord, DocumentChunkRecord, DocumentRecord,
+    DocumentVersionRecord, ModelUsageRecord, QueryRecord, RuntimeModelConfigRecord,
 )
 from .pricing import cost_cny, pricing_status
 from .text_index import lexical_text, lexical_terms
@@ -76,7 +76,8 @@ class QueryDatabase:
             required = {
                 QueryRecord.__tablename__, ModelUsageRecord.__tablename__,
                 DocumentRecord.__tablename__, DocumentVersionRecord.__tablename__,
-                DocumentChunkRecord.__tablename__,
+                DocumentChunkRecord.__tablename__, DocumentAclRecord.__tablename__,
+                AuditEventRecord.__tablename__, RuntimeModelConfigRecord.__tablename__,
             }
             if not required.issubset(tables):
                 return False, "database_schema_missing"
@@ -84,10 +85,12 @@ class QueryDatabase:
         except (OSError, SQLAlchemyError):
             return False, "database_unavailable"
 
-    def record(self, session_id: str, question: str, evidence: str, model_route: str) -> int:
+    def record(self, session_id: str, question: str, evidence: str, model_route: str,
+               owner_subject_id: str = "legacy") -> int:
         self.initialize()
         row = QueryRecord(
             session_id=str(session_id or "default")[:128],
+            owner_subject_id=owner_subject_id[:64],
             question=question,
             evidence=evidence,
             model_route=model_route,
@@ -103,12 +106,14 @@ class QueryDatabase:
                 row.model_route = model_route
                 row.evidence = evidence
 
-    def history(self, session_id: str, limit: int = 20) -> list[dict]:
+    def history(self, session_id: str, limit: int = 20,
+                owner_subject_id: str = "legacy") -> list[dict]:
         self.initialize()
         count = max(1, min(int(limit), 100))
         statement = (
             select(QueryRecord)
             .where(QueryRecord.session_id == str(session_id or "default")[:128])
+            .where(QueryRecord.owner_subject_id == owner_subject_id[:64])
             .order_by(QueryRecord.id.desc())
             .limit(count)
         )
@@ -191,7 +196,11 @@ class QueryDatabase:
                 session.add_all(rows)
 
     def begin_document_import(self, *, source_key: str, title: str, mime_type: str,
-                              content_sha256: str) -> dict:
+                              content_sha256: str, access_scope: str | None = None,
+                              classification: str | None = None) -> dict:
+        normalized_scope = str(access_scope).strip().lower() if access_scope is not None else None
+        if normalized_scope is not None and normalized_scope not in {"public", "restricted"}:
+            raise ValueError("文档访问范围无效")
         now = datetime.now(timezone.utc)
         with self._sessions.begin() as session:
             document = session.scalar(select(DocumentRecord).where(
@@ -200,6 +209,8 @@ class QueryDatabase:
             if document is None:
                 document = DocumentRecord(
                     source_key=source_key[:512], title=title[:512], mime_type=mime_type,
+                    access_scope=normalized_scope or "public",
+                    classification=(classification or "internal")[:32],
                     created_at=now, updated_at=now,
                 )
                 session.add(document)
@@ -207,6 +218,10 @@ class QueryDatabase:
             else:
                 document.title = title[:512]
                 document.mime_type = mime_type
+                if normalized_scope is not None:
+                    document.access_scope = normalized_scope
+                if classification is not None:
+                    document.classification = classification[:32]
                 document.updated_at = now
             existing = session.scalar(select(DocumentVersionRecord).where(
                 DocumentVersionRecord.document_id == document.id,
@@ -293,6 +308,8 @@ class QueryDatabase:
             "document_id": document.id,
             "title": document.title,
             "source_key": document.source_key,
+            "access_scope": document.access_scope,
+            "classification": document.classification,
             "version": version.version,
             "status": version.status,
             "chunk_count": version.chunk_count,
@@ -318,12 +335,14 @@ class QueryDatabase:
         with self._sessions() as session:
             return bool(session.scalar(statement))
 
-    def hybrid_search(self, query: str, embedding: list[float], limit: int = 5) -> list[dict]:
+    def hybrid_search(self, query: str, embedding: list[float], limit: int = 5,
+                      *, subject_id: str = "legacy", roles=(), groups=()) -> list[dict]:
         if self.backend == "postgresql":
-            return self._postgres_hybrid_search(query, embedding, limit)
-        return self._portable_hybrid_search(query, embedding, limit)
+            return self._postgres_hybrid_search(query, embedding, limit, subject_id, roles, groups)
+        return self._portable_hybrid_search(query, embedding, limit, subject_id, roles, groups)
 
-    def lexical_search(self, query: str, limit: int = 5) -> list[dict]:
+    def lexical_search(self, query: str, limit: int = 5, *, subject_id: str = "legacy",
+                       roles=(), groups=()) -> list[dict]:
         if self.backend == "postgresql":
             statement = text("""
                 SELECT c.id, d.title, v.version, c.ordinal, c.heading, c.page_number,
@@ -334,18 +353,31 @@ class QueryDatabase:
                 JOIN document_versions v ON v.id = c.document_version_id
                 JOIN documents d ON d.id = v.document_id
                 WHERE v.status = 'indexed'
+                  AND (d.access_scope = 'public' OR EXISTS (
+                    SELECT 1 FROM document_acl a
+                    WHERE a.document_id = d.id AND (
+                      (a.principal_type = 'user' AND a.principal_id = :subject_id)
+                      OR (a.principal_type = 'role' AND a.principal_id = ANY(string_to_array(:acl_roles, ',')))
+                      OR (a.principal_type = 'group' AND a.principal_id = ANY(string_to_array(:acl_groups, ',')))
+                    )
+                  ))
                   AND c.search_vector @@ websearch_to_tsquery('simple', :query)
                 ORDER BY score DESC LIMIT :result_limit
             """)
             with self.engine.connect() as connection:
                 return [dict(row) for row in connection.execute(statement, {
                     "query": self._postgres_websearch_query(query), "result_limit": limit,
+                    "subject_id": subject_id, "acl_roles": ",".join(roles),
+                    "acl_groups": ",".join(groups),
                 }).mappings().all()]
-        results = self._portable_hybrid_search(query, [0.0] * 1024, max(limit * 4, 20))
+        results = self._portable_hybrid_search(
+            query, [0.0] * 1024, max(limit * 4, 20), subject_id, roles, groups,
+        )
         lexical = [item for item in results if item.get("lexical_rank") is not None]
         return sorted(lexical, key=lambda item: item["lexical_rank"])[:limit]
 
-    def _postgres_hybrid_search(self, query: str, embedding: list[float], limit: int) -> list[dict]:
+    def _postgres_hybrid_search(self, query: str, embedding: list[float], limit: int,
+                                subject_id: str, roles, groups) -> list[dict]:
         statement = text("""
             WITH eligible AS (
                 SELECT c.*, d.title, v.version
@@ -353,6 +385,14 @@ class QueryDatabase:
                 JOIN document_versions v ON v.id = c.document_version_id
                 JOIN documents d ON d.id = v.document_id
                 WHERE v.status = 'indexed'
+                  AND (d.access_scope = 'public' OR EXISTS (
+                    SELECT 1 FROM document_acl a
+                    WHERE a.document_id = d.id AND (
+                      (a.principal_type = 'user' AND a.principal_id = :subject_id)
+                      OR (a.principal_type = 'role' AND a.principal_id = ANY(string_to_array(:acl_roles, ',')))
+                      OR (a.principal_type = 'group' AND a.principal_id = ANY(string_to_array(:acl_groups, ',')))
+                    )
+                  ))
             ), lexical AS (
                 SELECT id, row_number() OVER (ORDER BY lexical_score DESC) AS lexical_rank
                 FROM (
@@ -394,18 +434,37 @@ class QueryDatabase:
                 "candidate_limit": max(20, limit * 5),
                 "semantic_threshold": 0.35,
                 "result_limit": limit,
+                "subject_id": subject_id, "acl_roles": ",".join(roles),
+                "acl_groups": ",".join(groups),
             }).mappings().all()
         return [dict(row) for row in rows]
 
-    def _portable_hybrid_search(self, query: str, embedding: list[float], limit: int) -> list[dict]:
+    def _portable_hybrid_search(self, query: str, embedding: list[float], limit: int,
+                                subject_id: str = "legacy", roles=(), groups=()) -> list[dict]:
         statement = (
-            select(DocumentChunkRecord, DocumentRecord.title, DocumentVersionRecord.version)
+            select(DocumentChunkRecord, DocumentRecord, DocumentVersionRecord.version)
             .join(DocumentVersionRecord, DocumentVersionRecord.id == DocumentChunkRecord.document_version_id)
             .join(DocumentRecord, DocumentRecord.id == DocumentVersionRecord.document_id)
             .where(DocumentVersionRecord.status == "indexed")
         )
         with self._sessions() as session:
             rows = session.execute(statement).all()
+            document_ids = {document.id for _, document, _ in rows}
+            acl_rows = session.execute(
+                select(
+                    DocumentAclRecord.document_id,
+                    DocumentAclRecord.principal_type,
+                    DocumentAclRecord.principal_id,
+                ).where(DocumentAclRecord.document_id.in_(document_ids))
+            ).all() if document_ids else []
+        acl_by_document: dict[int, set[tuple[str, str]]] = {}
+        for document_id, principal_type, principal_id in acl_rows:
+            acl_by_document.setdefault(document_id, set()).add((principal_type, principal_id))
+        roles = {str(item).lower() for item in roles}
+        groups = {str(item).lower() for item in groups}
+        rows = [row for row in rows if self._document_allowed(
+            row[1], subject_id, roles, groups, acl_by_document.get(row[1].id, set()),
+        )]
         if not rows:
             return []
         query_terms = lexical_terms(query)
@@ -441,7 +500,7 @@ class QueryDatabase:
             )
         }
         results = []
-        for chunk, title, version in rows:
+        for chunk, document, version in rows:
             similarity = semantic_scores[chunk.id]
             if chunk.id not in lexical_rank and similarity < 0.35:
                 continue
@@ -449,7 +508,7 @@ class QueryDatabase:
                 (1 / (60 + lexical_rank[chunk.id])) if chunk.id in lexical_rank else 0
             ) + (1 / (60 + semantic_rank[chunk.id]))
             results.append({
-                "id": chunk.id, "title": title, "version": version,
+                "id": chunk.id, "title": document.title, "version": version,
                 "ordinal": chunk.ordinal, "heading": chunk.heading,
                 "page_number": chunk.page_number, "content": chunk.content,
                 "lexical_rank": lexical_rank.get(chunk.id),
@@ -457,6 +516,137 @@ class QueryDatabase:
                 "similarity": similarity, "score": score,
             })
         return sorted(results, key=lambda item: item["score"], reverse=True)[:limit]
+
+    @staticmethod
+    def _document_allowed(document, subject_id: str, roles, groups, entries) -> bool:
+        if document.access_scope == "public":
+            return True
+        return (
+            ("user", subject_id.lower()) in entries
+            or any(("role", role) in entries for role in roles)
+            or any(("group", group) in entries for group in groups)
+        )
+
+    def set_document_acl(self, document_id: int, entries, *, actor_subject_id: str,
+                         request_id: str, access_scope: str = "restricted") -> None:
+        allowed_types = {"user", "group", "role"}
+        access_scope = str(access_scope).strip().lower()
+        if access_scope not in {"public", "restricted"}:
+            raise ValueError("文档访问范围无效")
+        normalized = {(str(kind).lower(), str(value).strip().lower()) for kind, value in entries}
+        if any(
+            kind not in allowed_types or not value or len(value) > 256
+            for kind, value in normalized
+        ):
+            raise ValueError("文档 ACL 主体格式无效")
+        if access_scope == "public":
+            normalized = set()
+        with self._sessions.begin() as session:
+            document = session.get(DocumentRecord, document_id)
+            if document is None:
+                raise ValueError("文档不存在")
+            document.access_scope = access_scope
+            document.updated_at = datetime.now(timezone.utc)
+            session.query(DocumentAclRecord).filter(
+                DocumentAclRecord.document_id == document_id,
+            ).delete()
+            session.add_all(DocumentAclRecord(
+                document_id=document_id, principal_type=kind, principal_id=value,
+                created_by_subject_id=actor_subject_id[:64],
+            ) for kind, value in sorted(normalized))
+            session.add(AuditEventRecord(
+                actor_subject_id=actor_subject_id[:64], action="document_acl_replace",
+                target_type="document", target_ref=str(document_id), result="success",
+                request_id=request_id[:128],
+            ))
+
+    def document_acl(self, document_id: int) -> list[dict]:
+        statement = select(DocumentAclRecord).where(
+            DocumentAclRecord.document_id == document_id,
+        ).order_by(DocumentAclRecord.id)
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [{"principal_type": row.principal_type, "principal_id": row.principal_id}
+                for row in rows]
+
+    def document_access(self, document_id: int) -> dict:
+        with self._sessions() as session:
+            document = session.get(DocumentRecord, document_id)
+        if document is None:
+            raise ValueError("文档不存在")
+        return {
+            "document_id": document.id,
+            "access_scope": document.access_scope,
+            "classification": document.classification,
+            "entries": self.document_acl(document_id),
+        }
+
+    def record_audit_event(self, *, actor_subject_id: str, action: str,
+                           target_type: str, target_ref: str, result: str,
+                           request_id: str) -> None:
+        with self._sessions.begin() as session:
+            session.add(AuditEventRecord(
+                actor_subject_id=actor_subject_id[:64],
+                action=action[:64],
+                target_type=target_type[:32],
+                target_ref=target_ref[:512],
+                result=result[:16],
+                request_id=request_id[:128],
+            ))
+
+    def runtime_model_config(self) -> dict | None:
+        try:
+            with self._sessions() as session:
+                row = session.get(RuntimeModelConfigRecord, 1)
+        except (OSError, SQLAlchemyError):
+            return None
+        if row is None:
+            return None
+        return {
+            "mode": row.mode,
+            "provider": row.provider,
+            "model": row.model,
+            "updated_by_subject_id": row.updated_by_subject_id,
+            "updated_at": row.updated_at.isoformat(),
+        }
+
+    def set_runtime_model_config(self, *, mode: str, provider: str, model: str,
+                                 actor_subject_id: str, request_id: str) -> dict:
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            row = session.get(RuntimeModelConfigRecord, 1)
+            if row is None:
+                row = RuntimeModelConfigRecord(id=1)
+                session.add(row)
+            row.mode = mode[:16]
+            row.provider = provider[:32]
+            row.model = model[:128]
+            row.updated_by_subject_id = actor_subject_id[:64]
+            row.updated_at = now
+            session.add(AuditEventRecord(
+                actor_subject_id=actor_subject_id[:64], action="model_config_update",
+                target_type="model_config", target_ref=f"{mode}:{provider}:{model}"[:512],
+                result="success", request_id=request_id[:128],
+            ))
+        return self.runtime_model_config() or {}
+
+    def audit_events(self, limit: int = 100) -> list[dict]:
+        count = max(1, min(int(limit), 200))
+        statement = select(AuditEventRecord).order_by(
+            AuditEventRecord.id.desc(),
+        ).limit(count)
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [{
+            "id": row.id,
+            "actor_subject_id": row.actor_subject_id,
+            "action": row.action,
+            "target_type": row.target_type,
+            "target_ref": row.target_ref,
+            "result": row.result,
+            "request_id": row.request_id,
+            "created_at": row.created_at.isoformat(),
+        } for row in rows]
 
     @staticmethod
     def _cosine(left, right) -> float:
@@ -473,12 +663,14 @@ class QueryDatabase:
     def _postgres_websearch_query(query: str) -> str:
         return " OR ".join(f'"{term}"' for term in lexical_terms(query))
 
-    def usage_ledger(self, session_id: str, limit: int = 50) -> list[dict]:
+    def usage_ledger(self, session_id: str, limit: int = 50,
+                     owner_subject_id: str = "legacy") -> list[dict]:
         count = max(1, min(int(limit), 100))
         statement = (
             select(ModelUsageRecord)
             .join(QueryRecord, QueryRecord.id == ModelUsageRecord.query_id)
             .where(QueryRecord.session_id == str(session_id or "default")[:128])
+            .where(QueryRecord.owner_subject_id == owner_subject_id[:64])
             .order_by(ModelUsageRecord.id.desc())
             .limit(count)
         )
@@ -486,7 +678,7 @@ class QueryDatabase:
             rows = session.scalars(statement).all()
         return [self._usage_public(row) for row in rows]
 
-    def usage_summary(self, session_id: str) -> dict:
+    def usage_summary(self, session_id: str, owner_subject_id: str = "legacy") -> dict:
         statement = (
             select(
                 func.count(ModelUsageRecord.id),
@@ -507,6 +699,7 @@ class QueryDatabase:
             )
             .join(QueryRecord, QueryRecord.id == ModelUsageRecord.query_id)
             .where(QueryRecord.session_id == str(session_id or "default")[:128])
+            .where(QueryRecord.owner_subject_id == owner_subject_id[:64])
         )
         with self._sessions() as session:
             row = session.execute(statement).one()

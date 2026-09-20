@@ -57,6 +57,11 @@ class DatabaseMigrationTests(unittest.TestCase):
             environment="production",
             database_url="postgresql+psycopg://user:secret@db/docmind",
             embedding_mode="provider",
+            auth_mode="oidc",
+            oidc_issuer="https://identity.example.com",
+            oidc_audience="docmind",
+            oidc_jwks_url="https://identity.example.com/.well-known/jwks.json",
+            auth_subject_salt="a-production-subject-salt-at-least-32-characters",
         )
         self.assertNotIn("secret", repr(settings))
         self.assertNotIn("database_url", settings.public())

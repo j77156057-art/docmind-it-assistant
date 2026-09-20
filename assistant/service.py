@@ -7,7 +7,7 @@ from pathlib import Path
 
 from backend import (
     HybridRetriever, ModelGateway, ModelGatewayError, ModelRouter, QueryDatabase, log_event,
-    request_id_context,
+    Principal, request_id_context,
 )
 
 
@@ -49,12 +49,20 @@ class ITQueryService:
             rows.append({"title": title, "text": "\n".join(body).strip(), "line": line})
         return rows
 
-    def query(self, session_id: str, question: str) -> dict:
+    def query(self, session_id: str, question: str, principal: Principal | None = None) -> dict:
         question = (question or "").strip()
         if not question:
             raise ValueError("问题不能为空")
-        query_id = self.database.record(session_id, question, "pending", "pending")
-        imported_hits = self.retriever.retrieve(question, query_id) if self.retriever else []
+        subject_id = principal.subject_id if principal else "legacy"
+        query_id = self.database.record(
+            session_id, question, "pending", "pending", owner_subject_id=subject_id,
+        )
+        imported_hits = self.retriever.retrieve(
+            question, query_id,
+            subject_id=subject_id,
+            roles=principal.acl_roles if principal else (),
+            groups=principal.acl_groups if principal else (),
+        ) if self.retriever else []
         if imported_hits:
             evidence = "sufficient"
             answer = "\n\n".join(item["content"] for item in imported_hits[:3])

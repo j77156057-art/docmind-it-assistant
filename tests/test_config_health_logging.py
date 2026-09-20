@@ -33,6 +33,15 @@ class ConfigurationTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     AppSettings.from_environment(root)
 
+    def test_development_auth_requires_loopback_hosts(self):
+        with self.assertRaisesRegex(ValueError, "development 认证只能监听本机回环地址"):
+            AppSettings(auth_mode="development", admin_host="0.0.0.0")
+
+        settings = AppSettings(
+            auth_mode="development", host="127.0.0.1", admin_host="::1",
+        )
+        self.assertEqual(settings.admin_host, "::1")
+
     def test_public_settings_contain_no_credentials(self):
         settings = AppSettings()
         payload = repr(settings.public()).lower()

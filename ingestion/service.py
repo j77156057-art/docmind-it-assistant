@@ -24,7 +24,9 @@ class DocumentIngestionService:
         self.max_characters = max_characters
         self.max_pages = max_pages
 
-    def import_file(self, path: str | Path, *, title: str = "", source_key: str = "") -> dict:
+    def import_file(self, path: str | Path, *, title: str = "", source_key: str = "",
+                    access_scope: str | None = None,
+                    classification: str | None = None) -> dict:
         file_path = Path(path).resolve()
         if not file_path.is_file():
             raise ValueError("文档不存在或不是文件")
@@ -45,6 +47,8 @@ class DocumentIngestionService:
             title=parsed.title,
             mime_type=parsed.mime_type,
             content_sha256=hashlib.sha256(raw).hexdigest(),
+            access_scope=access_scope,
+            classification=classification,
         )
         if version["duplicate"]:
             return {**version, "title": parsed.title, "chunk_count": len(chunks)}

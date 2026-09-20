@@ -39,6 +39,19 @@ class ModelGatewayMigrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ModelRouter("developer")
 
+    def test_runtime_loader_changes_fallback_route_without_restart(self):
+        active = {"mode": "local", "provider": "ollama", "model": "qwen2.5:7b"}
+        router = ModelRouter("knowledge", runtime_loader=lambda: active)
+
+        local = router.select("未知问题", "insufficient")
+        active.update({"mode": "knowledge", "provider": "builtin", "model": "deterministic"})
+        knowledge = router.select("未知问题", "insufficient")
+
+        self.assertEqual((local["route"], local["provider"]), ("local", "ollama"))
+        self.assertEqual((knowledge["route"], knowledge["provider"]), ("knowledge", "builtin"))
+        with self.assertRaisesRegex(ValueError, "API Key"):
+            router.validate_selection("cloud", "qwen", "qwen-plus")
+
 
 if __name__ == "__main__":
     unittest.main()

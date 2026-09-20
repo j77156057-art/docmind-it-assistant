@@ -20,7 +20,8 @@ class HybridRetriever:
     def healthcheck(self) -> tuple[bool, str]:
         return self.embeddings.healthcheck()
 
-    def retrieve(self, question: str, query_id: int) -> list[dict]:
+    def retrieve(self, question: str, query_id: int, *, subject_id: str = "legacy",
+                 roles=(), groups=()) -> list[dict]:
         if not self.database.has_indexed_chunks():
             return []
         request_id = request_id_context.get()
@@ -31,8 +32,13 @@ class HybridRetriever:
                 usages=exc.usages, request_id=request_id, query_id=query_id,
             )
             log_event(LOGGER, logging.WARNING, "embedding_query_failed", reason=exc.code)
-            return self.database.lexical_search(question, self.top_k)
+            return self.database.lexical_search(
+                question, self.top_k, subject_id=subject_id, roles=roles, groups=groups,
+            )
         self.database.record_embedding_usages(
             usages=result.usages, request_id=request_id, query_id=query_id,
         )
-        return self.database.hybrid_search(question, list(result.vectors[0]), self.top_k)
+        return self.database.hybrid_search(
+            question, list(result.vectors[0]), self.top_k,
+            subject_id=subject_id, roles=roles, groups=groups,
+        )

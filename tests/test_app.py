@@ -29,6 +29,7 @@ class ITAssistantTests(unittest.TestCase):
         with TestClient(app) as client:
             self.assertEqual(client.get("/api/runtime/model").status_code, 200)
             self.assertEqual(client.post("/api/query", json={"question": ""}).status_code, 400)
+            self.assertEqual(client.get("/api/admin/documents").status_code, 404)
 
 
 if __name__ == "__main__":
