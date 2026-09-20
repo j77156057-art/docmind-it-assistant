@@ -477,7 +477,10 @@
   function syncModelProvider(preferred = '') {
     const providers = providersForMode(selectedModelMode());
     const select = $('modelProvider');
-    const current = preferred || select.value;
+    // When the user changes mode, do not silently retain a provider from the
+    // previous mode (e.g. local llama.cpp). The first local provider is Ollama,
+    // which is the provider most users already have running on Windows.
+    const current = preferred || '';
     select.replaceChildren();
     for (const item of providers) {
       const option = document.createElement('option');
