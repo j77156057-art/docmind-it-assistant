@@ -337,6 +337,22 @@ def create_admin_app(settings: AppSettings | None = None,
                 provider,
                 models.base_url({**provider_route, "route": "local"}),
             )
+        if active["provider"] == "llamacpp" and not runtime_status.get("ready"):
+            active_key = _model_match_key(active["model"])
+            alternatives = [
+                name for name in local_models.get("ollama", {}).get("models", [])
+                if _model_match_key(name) == active_key
+            ]
+            if alternatives:
+                runtime_status.update({
+                    "state": "wrong_provider",
+                    "message": (
+                        f"检测到 Ollama 中有同名模型 {alternatives[0]}；当前选择的是 llama.cpp，"
+                        "请将供应商切换为“本地 Ollama”"
+                    ),
+                    "alternative_provider": "ollama",
+                    "alternative_models": alternatives,
+                })
         return {
             "ok": True,
             "active": active,
@@ -504,6 +520,10 @@ def create_admin_app(settings: AppSettings | None = None,
 def _quoted_filename(filename: str) -> str:
     from urllib.parse import quote
     return quote(filename, safe="")
+
+
+def _model_match_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
 
 
 app = create_admin_app()
