@@ -15,7 +15,8 @@ class ModelRouter:
                  configured_credentials: frozenset[str] | None = None,
                  credentials: dict[str, str] | None = None,
                  cloud_base_url: str = "", local_base_url: str = "", custom_base_url: str = "",
-                 runtime_loader: Callable[[], dict | None] | None = None):
+                 runtime_loader: Callable[[], dict | None] | None = None,
+                 runtime_credentials_loader: Callable[[], dict[str, str]] | None = None):
         self.mode = (mode or os.getenv("IT_MODEL_MODE") or "knowledge").strip().lower()
         if self.mode not in {"knowledge", "cloud", "local"}:
             raise ValueError(f"不支持的模型模式：{self.mode}")
@@ -30,9 +31,10 @@ class ModelRouter:
         self.local_base_url = local_base_url.strip()
         self.custom_base_url = custom_base_url.strip()
         self.runtime_loader = runtime_loader
+        self.runtime_credentials_loader = runtime_credentials_loader
 
     @classmethod
-    def from_settings(cls, settings, *, runtime_loader=None) -> "ModelRouter":
+    def from_settings(cls, settings, *, runtime_loader=None, runtime_credentials_loader=None) -> "ModelRouter":
         return cls(
             settings.model_mode,
             local_provider=settings.local_provider,
@@ -49,6 +51,7 @@ class ModelRouter:
             local_base_url=settings.local_base_url,
             custom_base_url=settings.custom_base_url,
             runtime_loader=runtime_loader,
+            runtime_credentials_loader=runtime_credentials_loader,
         )
 
     def _route(self, route: str, provider_key: str, configured_model: str) -> dict:
@@ -99,19 +102,21 @@ class ModelRouter:
 
     def _credential_is_configured(self, provider_key: str) -> bool:
         provider = get_provider(provider_key)
-        return bool(
+        runtime = self.runtime_credentials_loader() if self.runtime_credentials_loader else {}
+        return bool(runtime.get(provider.key) or (
             provider.api_key_env
             and (
                 provider.api_key_env in self.configured_credentials
                 if self.configured_credentials is not None
                 else os.getenv(provider.api_key_env)
             )
-        )
+        ))
 
-    def selection_status(self, mode: str, provider: str = "", model: str = "") -> dict:
+    def selection_status(self, mode: str, provider: str = "", model: str = "",
+                         api_key_override: str = "") -> dict:
         route = self._selection(mode, provider, model)
         spec = get_provider(route["provider"])
-        api_key_configured = self._credential_is_configured(spec.key)
+        api_key_configured = bool(api_key_override.strip()) or self._credential_is_configured(spec.key)
         ready, reason = True, "ok"
         if spec.cloud and not api_key_configured:
             ready, reason = False, "model_api_key_missing"
@@ -129,8 +134,9 @@ class ModelRouter:
             "reason": reason,
         }
 
-    def validate_selection(self, mode: str, provider: str = "", model: str = "") -> dict:
-        status = self.selection_status(mode, provider, model)
+    def validate_selection(self, mode: str, provider: str = "", model: str = "",
+                           api_key_override: str = "") -> dict:
+        status = self.selection_status(mode, provider, model, api_key_override)
         if not status["ready"]:
             if status["reason"] == "model_api_key_missing":
                 raise ValueError("所选供应商尚未配置 API Key")
@@ -184,7 +190,8 @@ class ModelRouter:
 
     def credential(self, provider_key: str) -> str:
         provider = get_provider(provider_key)
-        return (
+        runtime = self.runtime_credentials_loader() if self.runtime_credentials_loader else {}
+        return runtime.get(provider.key, "") or (
             self.credentials.get(provider.api_key_env, "") or os.getenv(provider.api_key_env, "")
             if provider.api_key_env else ""
         )

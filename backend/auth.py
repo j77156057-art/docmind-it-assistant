@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import hmac
+import time
+import secrets
 from typing import Callable, Mapping
 
 import jwt
@@ -11,6 +13,7 @@ from jwt import InvalidTokenError, PyJWKClient
 
 
 ROLE_LEVELS = {"viewer": 1, "auditor": 2, "admin": 3}
+SESSION_COOKIE = "docmind_session"
 
 
 class AuthenticationError(RuntimeError):
@@ -51,6 +54,25 @@ def subject_identifier(subject: str, salt: str) -> str:
     return hmac.new(salt.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def hash_password(password: str, *, iterations: int = 260_000) -> str:
+    if not password or len(password) < 8:
+        raise ValueError("密码至少需要 8 个字符")
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations)
+    return f"pbkdf2_sha256${iterations}${salt}${digest.hex()}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, rounds, salt, expected = encoded.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(rounds))
+        return hmac.compare_digest(actual.hex(), expected)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 def _claim_values(claims: Mapping, path: str) -> frozenset[str]:
     value = claims
     for part in (path or "").split("."):
@@ -70,7 +92,9 @@ class OIDCAuthenticator:
     def __init__(self, *, mode: str, issuer: str, audience: str, jwks_url: str,
                  subject_salt: str, role_claim: str = "roles", group_claim: str = "groups",
                  algorithms: tuple[str, ...] = ("RS256",), leeway_seconds: int = 30,
-                 key_resolver: Callable[[str], object] | None = None):
+                 key_resolver: Callable[[str], object] | None = None,
+                 local_username: str = "admin", local_password_hash: str = "",
+                 local_display_name: str = "本地管理员", local_session_hours: int = 12):
         self.mode = mode
         self.issuer = issuer.rstrip("/")
         self.audience = audience
@@ -82,12 +106,18 @@ class OIDCAuthenticator:
         self.leeway_seconds = leeway_seconds
         self._key_resolver = key_resolver
         self._jwks_client = PyJWKClient(jwks_url, cache_keys=True) if jwks_url else None
+        self.local_username = local_username.strip()
+        self.local_password_hash = local_password_hash.strip()
+        self.local_display_name = local_display_name.strip()[:128]
+        self.local_session_hours = max(1, min(local_session_hours, 168))
 
     def healthcheck(self) -> tuple[bool, str]:
         if not self.subject_salt:
             return False, "auth_subject_salt_missing"
         if self.mode in {"development", "trusted_headers"}:
             return True, "ok"
+        if self.mode == "local":
+            return (True, "ok") if self.local_username and self.local_password_hash else (False, "local_credentials_missing")
         if not self.issuer:
             return False, "oidc_issuer_missing"
         if not self.audience:
@@ -106,11 +136,43 @@ class OIDCAuthenticator:
             if not subject:
                 raise AuthenticationError("credentials_missing")
             return self._principal(subject, roles, groups, headers.get("x-auth-name", ""))
+        if self.mode == "local":
+            cookie = headers.get("cookie", "")
+            token = next((part.split("=", 1)[1] for part in cookie.split(";")
+                          if part.strip().startswith(f"{SESSION_COOKIE}=")), "")
+            authorization = headers.get("authorization", "")
+            bearer = authorization.partition(" ")[2].strip()
+            return self._authenticate_local_token(token or bearer)
         authorization = headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
             raise AuthenticationError("credentials_missing")
         return self._authenticate_token(token.strip())
+
+    def login(self, username: str, password: str) -> str:
+        if not self.local_username or not verify_password(password, self.local_password_hash):
+            raise AuthenticationError("credentials_invalid")
+        if not hmac.compare_digest(username.strip(), self.local_username):
+            raise AuthenticationError("credentials_invalid")
+        now = int(time.time())
+        signing_key = hashlib.sha256(self.subject_salt.encode("utf-8")).digest()
+        return jwt.encode({
+            "sub": username.strip(), "name": self.local_display_name,
+            "roles": ["admin", "auditor", "viewer"], "groups": ["local"],
+            "iat": now, "exp": now + self.local_session_hours * 3600,
+        }, signing_key, algorithm="HS256")
+
+    def _authenticate_local_token(self, token: str) -> Principal:
+        if not token:
+            raise AuthenticationError("credentials_missing")
+        try:
+            signing_key = hashlib.sha256(self.subject_salt.encode("utf-8")).digest()
+            claims = jwt.decode(token, signing_key, algorithms=["HS256"],
+                                options={"require": ["exp", "iat", "sub"]})
+        except InvalidTokenError:
+            raise AuthenticationError("token_invalid") from None
+        return self._principal(str(claims["sub"]), _claim_values(claims, "roles"),
+                               _claim_values(claims, "groups"), str(claims.get("name") or ""))
 
     def _authenticate_token(self, token: str) -> Principal:
         try:

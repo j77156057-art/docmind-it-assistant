@@ -56,6 +56,7 @@
         </div>
         <div class="top-actions">
           <button class="icon-button" id="refreshButton" aria-label="刷新" title="刷新"><svg><use href="#i-refresh"/></svg></button>
+          <button class="secondary-button" id="logoutButton" type="button" hidden>退出登录</button>
           <span class="role-badge" id="roleBadge">连接中</span>
           <div class="identity" title="当前用户">
             <span class="avatar" id="avatar">--</span>
@@ -179,6 +180,7 @@
               </select><small class="field-hint">模型只会看到当前用户有权限访问的资料片段。</small></label>
               <label class="field"><span>供应商</span><select id="modelProvider" name="provider"></select></label>
               <label class="field"><span>模型</span><input id="modelName" name="model" list="modelOptions" maxlength="128" required><datalist id="modelOptions"></datalist><small class="field-hint" id="modelOptionsHint">正在读取本机已安装模型…</small></label>
+              <label class="field"><span>云端 API Key</span><input id="modelApiKey" name="api_key" type="password" autocomplete="new-password" maxlength="512" placeholder="仅云端供应商需要，留空则使用已保存密钥"><small class="field-hint">密钥会加密保存，只显示“已配置”，不会写入审计日志或接口响应。</small></label>
               <dl class="model-details">
                 <div><dt>当前生效</dt><dd id="activeModel">-</dd></div>
                 <div><dt>上下文</dt><dd id="modelContext">-</dd></div>

@@ -1,8 +1,10 @@
 import os
 import unittest
 from unittest.mock import patch
+import tempfile
+from pathlib import Path
 
-from backend import ModelRouter, cost_cny, get_provider, model_context_window, price_for
+from backend import ModelRouter, QueryDatabase, cost_cny, get_provider, model_context_window, price_for
 
 
 class ModelGatewayMigrationTests(unittest.TestCase):
@@ -51,6 +53,30 @@ class ModelGatewayMigrationTests(unittest.TestCase):
         self.assertEqual((knowledge["route"], knowledge["provider"]), ("knowledge", "builtin"))
         with self.assertRaisesRegex(ValueError, "API Key"):
             router.validate_selection("cloud", "qwen", "qwen-plus")
+
+    def test_runtime_cloud_credential_is_encrypted_and_loaded(self):
+        with tempfile.TemporaryDirectory() as root:
+            database = QueryDatabase(str(Path(root) / "credentials.db"), secret_key="test-secret")
+            database.initialize()
+            database.set_runtime_provider_credential(
+                provider="qwen", api_key="secret-cloud-key",
+                actor_subject_id="admin", request_id="credential-test",
+            )
+            router = ModelRouter(
+                "cloud", cloud_provider="qwen", cloud_model="qwen-plus",
+                runtime_credentials_loader=database.runtime_provider_credentials,
+            )
+            with database.engine.connect() as connection:
+                stored = connection.exec_driver_sql(
+                    "SELECT ciphertext FROM runtime_provider_credentials WHERE provider='qwen'"
+                ).scalar_one()
+            credential = router.credential("qwen")
+            status = router.status()
+            database.dispose()
+
+        self.assertNotIn("secret-cloud-key", stored)
+        self.assertEqual(credential, "secret-cloud-key")
+        self.assertTrue(status["api_key_configured"])
 
 
 if __name__ == "__main__":

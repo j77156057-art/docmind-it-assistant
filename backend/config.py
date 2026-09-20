@@ -110,7 +110,11 @@ class AppSettings(BaseModel):
     chunk_max_chars: int = Field(default=1200, ge=200, le=8000)
     chunk_overlap_chars: int = Field(default=150, ge=0, le=2000)
     retrieval_top_k: int = Field(default=5, ge=1, le=20)
-    auth_mode: Literal["development", "trusted_headers", "oidc"] = "development"
+    auth_mode: Literal["development", "trusted_headers", "oidc", "local"] = "development"
+    local_username: str = "admin"
+    local_password_hash: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
+    local_display_name: str = "本地管理员"
+    local_session_hours: int = Field(default=12, ge=1, le=168)
     oidc_issuer: str = ""
     oidc_audience: str = ""
     oidc_jwks_url: str = ""
@@ -165,6 +169,10 @@ class AppSettings(BaseModel):
             _is_loopback_host(self.host) and _is_loopback_host(self.admin_host)
         ):
             raise ValueError("development 认证只能监听本机回环地址")
+        if self.auth_mode == "local" and (
+            not self.local_username or not self.local_password_hash.get_secret_value()
+        ):
+            raise ValueError("local 认证必须配置 IT_LOCAL_USERNAME 和 IT_LOCAL_PASSWORD_HASH")
         if self.environment == "production" and self.auth_mode != "oidc":
             raise ValueError("生产环境 IT_AUTH_MODE 必须使用 oidc")
         if self.auth_mode == "oidc":
@@ -246,6 +254,10 @@ class AppSettings(BaseModel):
             chunk_overlap_chars=int(read("IT_CHUNK_OVERLAP_CHARS", "150")),
             retrieval_top_k=int(read("IT_RETRIEVAL_TOP_K", "5")),
             auth_mode=read("IT_AUTH_MODE", "development").strip().lower(),
+            local_username=read("IT_LOCAL_USERNAME", "admin").strip(),
+            local_password_hash=SecretStr(read("IT_LOCAL_PASSWORD_HASH", "").strip()),
+            local_display_name=read("IT_LOCAL_DISPLAY_NAME", "本地管理员").strip(),
+            local_session_hours=int(read("IT_LOCAL_SESSION_HOURS", "12")),
             oidc_issuer=read("IT_OIDC_ISSUER", "").strip(),
             oidc_audience=read("IT_OIDC_AUDIENCE", "").strip(),
             oidc_jwks_url=read("IT_OIDC_JWKS_URL", "").strip(),

@@ -7,6 +7,8 @@ from decimal import Decimal
 from collections import Counter
 from datetime import datetime, timezone
 import math
+import base64
+import hashlib
 
 from sqlalchemy import and_, case, create_engine, func, inspect, or_, select, text
 from sqlalchemy.engine import Engine, make_url
@@ -17,7 +19,9 @@ from sqlalchemy.pool import NullPool
 from .db_models import (
     AuditEventRecord, Base, DocumentAclRecord, DocumentChunkRecord, DocumentRecord,
     DocumentVersionRecord, ModelUsageRecord, QueryRecord, RuntimeModelConfigRecord,
+    RuntimeProviderCredentialRecord,
 )
+from cryptography.fernet import Fernet, InvalidToken
 from .pricing import cost_cny, pricing_status
 from .text_index import lexical_text, lexical_terms
 
@@ -34,7 +38,7 @@ class QueryDatabase:
     """Repository boundary; PostgreSQL schema ownership remains with Alembic."""
 
     def __init__(self, url_or_path: str, *, pool_size: int = 5, max_overflow: int = 10,
-                 pool_timeout: int = 30, connect_timeout: int = 5):
+                 pool_timeout: int = 30, connect_timeout: int = 5, secret_key: str = ""):
         self.url = _database_url(str(url_or_path))
         url = make_url(self.url)
         engine_options: dict = {"pool_pre_ping": True}
@@ -53,6 +57,8 @@ class QueryDatabase:
             })
         self.engine: Engine = create_engine(self.url, **engine_options)
         self._sessions = sessionmaker(bind=self.engine, expire_on_commit=False)
+        digest = hashlib.sha256((secret_key or "development-only").encode("utf-8")).digest()
+        self._credential_cipher = Fernet(base64.urlsafe_b64encode(digest))
 
     @property
     def backend(self) -> str:
@@ -78,6 +84,7 @@ class QueryDatabase:
                 DocumentRecord.__tablename__, DocumentVersionRecord.__tablename__,
                 DocumentChunkRecord.__tablename__, DocumentAclRecord.__tablename__,
                 AuditEventRecord.__tablename__, RuntimeModelConfigRecord.__tablename__,
+                RuntimeProviderCredentialRecord.__tablename__,
             }
             if not required.issubset(tables):
                 return False, "database_schema_missing"
@@ -700,6 +707,39 @@ class QueryDatabase:
                 result="success", request_id=request_id[:128],
             ))
         return self.runtime_model_config() or {}
+
+    def runtime_provider_credentials(self) -> dict[str, str]:
+        try:
+            with self._sessions() as session:
+                rows = session.scalars(select(RuntimeProviderCredentialRecord)).all()
+        except (OSError, SQLAlchemyError):
+            return {}
+        values = {}
+        for row in rows:
+            try:
+                values[row.provider] = self._credential_cipher.decrypt(
+                    row.ciphertext.encode("ascii")
+                ).decode("utf-8")
+            except (InvalidToken, ValueError, UnicodeError):
+                continue
+        return values
+
+    def set_runtime_provider_credential(self, *, provider: str, api_key: str,
+                                        actor_subject_id: str, request_id: str) -> None:
+        ciphertext = self._credential_cipher.encrypt(api_key.encode("utf-8")).decode("ascii")
+        with self._sessions.begin() as session:
+            row = session.get(RuntimeProviderCredentialRecord, provider[:32])
+            if row is None:
+                row = RuntimeProviderCredentialRecord(provider=provider[:32])
+                session.add(row)
+            row.ciphertext = ciphertext
+            row.updated_by_subject_id = actor_subject_id[:64]
+            row.updated_at = datetime.now(timezone.utc)
+            session.add(AuditEventRecord(
+                actor_subject_id=actor_subject_id[:64], action="provider_credential_update",
+                target_type="provider", target_ref=provider[:32], result="success",
+                request_id=request_id[:128],
+            ))
 
     def audit_events(self, limit: int = 100) -> list[dict]:
         count = max(1, min(int(limit), 200))

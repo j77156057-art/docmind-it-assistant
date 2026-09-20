@@ -179,6 +179,17 @@ class RuntimeModelConfigRecord(Base):
     )
 
 
+class RuntimeProviderCredentialRecord(Base):
+    __tablename__ = "runtime_provider_credentials"
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by_subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class AuditEventRecord(Base):
     __tablename__ = "audit_events"
 

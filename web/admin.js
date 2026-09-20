@@ -30,6 +30,10 @@
 
   async function api(url, options = {}) {
     const response = await fetch(url, { credentials: 'same-origin', ...options });
+    if (response.status === 401) {
+      location.href = '/login';
+      throw new Error('请先登录');
+    }
     const payload = await response.json().catch(() => ({ ok: false, error: '响应格式无效' }));
     if (!response.ok || payload.ok === false) {
       const error = new Error(payload.error || '请求失败');
@@ -508,6 +512,11 @@
     const context = Number(option.dataset.contextWindow || 0);
     $('modelContext').textContent = context ? `${context.toLocaleString()} Token` : '不适用';
     $('modelCredential').textContent = option.dataset.baseUrlConfigured === 'false' ? '服务地址未配置' : option.dataset.credential;
+    const cloud = selectedModelMode() === 'cloud';
+    $('modelApiKey').disabled = !cloud;
+    $('modelApiKey').placeholder = cloud
+      ? '留空则使用已保存密钥，填写新 Key 可更新'
+      : '仅云端供应商需要';
     renderLocalModels();
   }
 
@@ -533,6 +542,7 @@
     const modeInput = document.querySelector(`#modelForm input[name="mode"][value="${active.mode}"]`);
     if (modeInput) modeInput.checked = true;
     $('modelName').value = active.model;
+    $('modelApiKey').value = '';
     $('responseStrategy').value = payload.response_strategy || payload.override?.response_strategy || 'knowledge_first';
     syncModelProvider(active.provider);
     $('activeModel').textContent = `${active.provider} / ${active.model}`;
@@ -586,6 +596,7 @@
           provider: data.get('provider'),
           model: String(data.get('model') || '').trim(),
           response_strategy: data.get('response_strategy') || 'knowledge_first',
+          api_key: String(data.get('api_key') || '').trim(),
         }),
       });
       const message = result.runtime?.verified
@@ -671,11 +682,22 @@
     }
   }
 
+  async function setupAuthentication() {
+    const config = await api('/api/auth/config');
+    $('logoutButton').hidden = config.mode !== 'local';
+  }
+
+  async function logout() {
+    await api('/api/auth/logout', { method: 'POST' });
+    location.href = '/login';
+  }
+
   function bind() {
     document.querySelectorAll('.nav-item').forEach(button => button.addEventListener('click', () => setView(button.dataset.view)));
     $('menuButton').addEventListener('click', openSidebar);
     $('sidebarScrim').addEventListener('click', closeSidebar);
     $('refreshButton').addEventListener('click', refresh);
+    $('logoutButton').addEventListener('click', logout);
     $('documentSearch').addEventListener('input', renderDocuments);
     $('scopeFilter').addEventListener('change', renderDocuments);
     $('auditFilter').addEventListener('change', renderAudit);
@@ -716,6 +738,7 @@
     bind();
     syncArtifactFormat();
     try {
+      await setupAuthentication();
       state.me = await api('/api/me');
       setIdentity();
     } catch (error) {

@@ -7,16 +7,45 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 import httpx
 import jwt
+from pydantic import SecretStr
 from sqlalchemy import text
 
 from admin_app import create_admin_app
 from app import create_app
 from backend import AppSettings, ModelRuntime, OIDCAuthenticator, QueryDatabase
+from backend.auth import hash_password
 from backend.embeddings import EmbeddingClient
 from ingestion import DocumentIngestionService
 
 
 class SsoRbacAclTests(unittest.TestCase):
+    def test_local_login_issues_secure_session_cookie(self):
+        with tempfile.TemporaryDirectory() as root:
+            settings = self.make_settings(root).model_copy(update={
+                "auth_mode": "local", "local_username": "admin",
+                "local_password_hash": SecretStr(hash_password("correct-password")),
+            })
+            application = create_app(settings)
+            with TestClient(application) as client:
+                denied = client.get("/api/me")
+                wrong = client.post("/api/auth/login", json={
+                    "username": "admin", "password": "wrong-password",
+                })
+                logged_in = client.post("/api/auth/login", json={
+                    "username": "admin", "password": "correct-password",
+                })
+                me = client.get("/api/me")
+                logged_out = client.post("/api/auth/logout")
+                denied_again = client.get("/api/me")
+
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(wrong.status_code, 401)
+        self.assertEqual(logged_in.status_code, 200)
+        self.assertIn("httponly", logged_in.headers["set-cookie"].lower())
+        self.assertIn("admin", me.json()["roles"])
+        self.assertEqual(logged_out.status_code, 200)
+        self.assertEqual(denied_again.status_code, 401)
+
     def make_settings(self, root: str, *, auth_mode: str = "trusted_headers") -> AppSettings:
         project = Path(root)
         knowledge = project / "knowledge.md"

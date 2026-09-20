@@ -34,7 +34,7 @@ class ModelRuntime:
             variants.add(value[:-7])
         return variants
 
-    def status(self, selection: dict, base_url: str) -> dict:
+    def status(self, selection: dict, base_url: str, api_key: str = "") -> dict:
         mode = selection.get("mode") or selection.get("route")
         provider = selection.get("provider", "")
         model = selection.get("model", "")
@@ -48,7 +48,7 @@ class ModelRuntime:
                 "model": model,
             }
         if provider != "ollama":
-            return self._openai_compatible_status(provider, model, base_url)
+            return self._openai_compatible_status(provider, model, base_url, api_key)
         return self._ollama_status(model, base_url)
 
     def available_models(self, provider: str, base_url: str) -> dict:
@@ -77,14 +77,16 @@ class ModelRuntime:
                 return {"provider": provider, "reachable": False, "models": []}
         return {"provider": provider, "reachable": False, "models": []}
 
-    def activate(self, selection: dict, base_url: str) -> dict:
+    def activate(self, selection: dict, base_url: str, api_key: str = "") -> dict:
         mode = selection.get("mode") or selection.get("route")
         provider = selection.get("provider", "")
         model = selection.get("model", "")
-        if mode != "local":
-            return self.status(selection, base_url)
+        if mode == "knowledge":
+            return self.status(selection, base_url, api_key)
+        if mode == "cloud":
+            return self._activate_openai_compatible(provider, model, base_url, api_key)
         if provider != "ollama":
-            return self._activate_openai_compatible(provider, model, base_url)
+            return self._activate_openai_compatible(provider, model, base_url, api_key)
         native = self._native_ollama_base(base_url)
         payload = {
             "model": model,
@@ -152,10 +154,12 @@ class ModelRuntime:
             "vram_gb": round(vram / 1024 ** 3, 2),
         }
 
-    def _openai_compatible_status(self, provider: str, model: str, base_url: str) -> dict:
+    def _openai_compatible_status(self, provider: str, model: str, base_url: str,
+                                   api_key: str = "") -> dict:
         try:
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
             with httpx.Client(timeout=min(self.timeout_seconds, 8.0), transport=self.transport) as client:
-                response = client.get(f"{base_url.rstrip('/')}/models")
+                response = client.get(f"{base_url.rstrip('/')}/models", headers=headers)
                 response.raise_for_status()
             return {
                 "required": True, "ready": True, "state": "service_ready",
@@ -169,7 +173,8 @@ class ModelRuntime:
                 "model": model, "service_reachable": False, "loaded": None,
             }
 
-    def _activate_openai_compatible(self, provider: str, model: str, base_url: str) -> dict:
+    def _activate_openai_compatible(self, provider: str, model: str, base_url: str,
+                                     api_key: str = "") -> dict:
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": "只回复 OK"}],
@@ -179,8 +184,10 @@ class ModelRuntime:
         }
         started = time.perf_counter()
         try:
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
             with httpx.Client(timeout=self.timeout_seconds, transport=self.transport) as client:
-                response = client.post(f"{base_url.rstrip('/')}/chat/completions", json=payload)
+                response = client.post(f"{base_url.rstrip('/')}/chat/completions",
+                                       headers=headers, json=payload)
                 response.raise_for_status()
                 body = response.json()
             if not body.get("choices"):

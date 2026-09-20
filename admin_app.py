@@ -58,6 +58,7 @@ class ModelConfigReq(BaseModel):
     provider: str = Field(min_length=1, max_length=32)
     model: str = Field(min_length=1, max_length=128)
     response_strategy: Literal["knowledge_first", "generative_first", "hybrid"] | None = None
+    api_key: str = Field(default="", max_length=512)
 
 
 def create_admin_app(settings: AppSettings | None = None,
@@ -71,6 +72,7 @@ def create_admin_app(settings: AppSettings | None = None,
         max_overflow=config.database_max_overflow,
         pool_timeout=config.database_pool_timeout,
         connect_timeout=config.database_connect_timeout,
+        secret_key=config.auth_subject_salt.get_secret_value(),
     )
     embeddings = embedding_client or build_embedding_client(config)
     ingestion = DocumentIngestionService(
@@ -91,9 +93,16 @@ def create_admin_app(settings: AppSettings | None = None,
         role_claim=config.oidc_role_claim,
         group_claim=config.oidc_group_claim,
         leeway_seconds=config.oidc_leeway_seconds,
+        local_username=config.local_username,
+        local_password_hash=config.local_password_hash.get_secret_value(),
+        local_display_name=config.local_display_name,
+        local_session_hours=config.local_session_hours,
     )
     artifacts = ArtifactService(config.artifact_output_path)
-    models = ModelRouter.from_settings(config, runtime_loader=database.runtime_model_config)
+    models = ModelRouter.from_settings(
+        config, runtime_loader=database.runtime_model_config,
+        runtime_credentials_loader=database.runtime_provider_credentials,
+    )
     sources = DocumentSourceStore(config.project_root / "data" / "sources")
     runtime = model_runtime or ModelRuntime(timeout_seconds=max(60.0, config.model_timeout_seconds))
 
@@ -187,6 +196,41 @@ def create_admin_app(settings: AppSettings | None = None,
     @application.get("/")
     async def admin_index():
         return FileResponse(config.admin_index_path)
+
+    @application.get("/login")
+    async def login_page():
+        return FileResponse(config.project_root / "web" / "login.html")
+
+    @application.get("/assets/login.css")
+    async def login_styles():
+        return FileResponse(config.project_root / "web" / "login.css", media_type="text/css")
+
+    @application.get("/assets/login.js")
+    async def login_script():
+        return FileResponse(config.project_root / "web" / "login.js", media_type="text/javascript")
+
+    @application.get("/api/auth/config")
+    async def auth_config():
+        return {"ok": True, "mode": config.auth_mode, "login_required": config.auth_mode == "local"}
+
+    @application.post("/api/auth/login")
+    async def auth_login(payload: dict):
+        if config.auth_mode != "local":
+            raise HTTPException(status_code=400, detail="当前认证模式不使用本地登录")
+        try:
+            token = authenticator.login(str(payload.get("username") or ""), str(payload.get("password") or ""))
+        except AuthenticationError:
+            raise HTTPException(status_code=401, detail="用户名或密码错误") from None
+        response = JSONResponse({"ok": True})
+        response.set_cookie("docmind_session", token, httponly=True, samesite="lax",
+                            secure=config.environment == "production", max_age=config.local_session_hours * 3600)
+        return response
+
+    @application.post("/api/auth/logout")
+    async def auth_logout():
+        response = JSONResponse({"ok": True})
+        response.delete_cookie("docmind_session")
+        return response
 
     @application.get("/assets/admin.css")
     async def admin_styles():
@@ -370,7 +414,9 @@ def create_admin_app(settings: AppSettings | None = None,
         response_strategy = payload.response_strategy or models.response_strategy()
         target_ref = f"{payload.mode}:{payload.provider}:{payload.model}:{response_strategy}"
         try:
-            selected = models.validate_selection(payload.mode, payload.provider, payload.model)
+            selected = models.validate_selection(
+                payload.mode, payload.provider, payload.model, payload.api_key,
+            )
         except ValueError as exc:
             database.record_audit_event(
                 actor_subject_id=principal.subject_id,
@@ -386,6 +432,7 @@ def create_admin_app(settings: AppSettings | None = None,
                 runtime.activate,
                 selected,
                 models.base_url({**selected, "route": selected["mode"]}),
+                payload.api_key.strip() or models.credential(selected["provider"]),
             )
         except ModelRuntimeError as exc:
             database.record_audit_event(
@@ -405,6 +452,11 @@ def create_admin_app(settings: AppSettings | None = None,
             actor_subject_id=principal.subject_id,
             request_id=request_id_context.get(),
         )
+        if payload.api_key.strip() and selected["provider"] not in {"builtin", "ollama", "llamacpp"}:
+            database.set_runtime_provider_credential(
+                provider=selected["provider"], api_key=payload.api_key.strip(),
+                actor_subject_id=principal.subject_id, request_id=request_id_context.get(),
+            )
         return {
             "ok": True, "active": models.status(), "runtime": runtime_status,
             "override": saved,

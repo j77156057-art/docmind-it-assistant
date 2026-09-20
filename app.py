@@ -37,9 +37,11 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         max_overflow=config.database_max_overflow,
         pool_timeout=config.database_pool_timeout,
         connect_timeout=config.database_connect_timeout,
+        secret_key=config.auth_subject_salt.get_secret_value(),
     )
     models = ModelRouter.from_settings(
         config, runtime_loader=database.runtime_model_config,
+        runtime_credentials_loader=database.runtime_provider_credentials,
     )
     gateway = model_gateway or ModelGateway(
         timeout_seconds=config.model_timeout_seconds,
@@ -60,6 +62,10 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         role_claim=config.oidc_role_claim,
         group_claim=config.oidc_group_claim,
         leeway_seconds=config.oidc_leeway_seconds,
+        local_username=config.local_username,
+        local_password_hash=config.local_password_hash.get_secret_value(),
+        local_display_name=config.local_display_name,
+        local_session_hours=config.local_session_hours,
     )
 
     @asynccontextmanager
@@ -150,6 +156,41 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
     @application.get("/")
     async def index():
         return FileResponse(config.web_index_path)
+
+    @application.get("/login")
+    async def login_page():
+        return FileResponse(config.project_root / "web" / "login.html")
+
+    @application.get("/assets/login.css")
+    async def login_styles():
+        return FileResponse(config.project_root / "web" / "login.css", media_type="text/css")
+
+    @application.get("/assets/login.js")
+    async def login_script():
+        return FileResponse(config.project_root / "web" / "login.js", media_type="text/javascript")
+
+    @application.get("/api/auth/config")
+    async def auth_config():
+        return {"ok": True, "mode": config.auth_mode, "login_required": config.auth_mode == "local"}
+
+    @application.post("/api/auth/login")
+    async def auth_login(payload: dict):
+        if config.auth_mode != "local":
+            raise HTTPException(status_code=400, detail="当前认证模式不使用本地登录")
+        try:
+            token = authenticator.login(str(payload.get("username") or ""), str(payload.get("password") or ""))
+        except AuthenticationError:
+            raise HTTPException(status_code=401, detail="用户名或密码错误") from None
+        response = JSONResponse({"ok": True})
+        response.set_cookie("docmind_session", token, httponly=True, samesite="lax",
+                            secure=config.environment == "production", max_age=config.local_session_hours * 3600)
+        return response
+
+    @application.post("/api/auth/logout")
+    async def auth_logout():
+        response = JSONResponse({"ok": True})
+        response.delete_cookie("docmind_session")
+        return response
 
     @application.get("/health/live")
     async def health_live():
