@@ -115,6 +115,8 @@ class AppSettings(BaseModel):
     local_password_hash: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
     local_display_name: str = "本地管理员"
     local_session_hours: int = Field(default=12, ge=1, le=168)
+    guest_login_enabled: bool = False
+    guest_session_hours: int = Field(default=2, ge=1, le=24)
     oidc_issuer: str = ""
     oidc_audience: str = ""
     oidc_jwks_url: str = ""
@@ -258,6 +260,8 @@ class AppSettings(BaseModel):
             local_password_hash=SecretStr(read("IT_LOCAL_PASSWORD_HASH", "").strip()),
             local_display_name=read("IT_LOCAL_DISPLAY_NAME", "本地管理员").strip(),
             local_session_hours=int(read("IT_LOCAL_SESSION_HOURS", "12")),
+            guest_login_enabled=_bool(read("IT_GUEST_LOGIN_ENABLED", "false")),
+            guest_session_hours=int(read("IT_GUEST_SESSION_HOURS", "2")),
             oidc_issuer=read("IT_OIDC_ISSUER", "").strip(),
             oidc_audience=read("IT_OIDC_AUDIENCE", "").strip(),
             oidc_jwks_url=read("IT_OIDC_JWKS_URL", "").strip(),

@@ -1,12 +1,13 @@
 import os
+from pathlib import Path
 import tempfile
 import unittest
 
 from fastapi.testclient import TestClient
 
-from app import app
+from app import create_app
 from assistant import ITQueryService
-from backend import ModelRouter, QueryDatabase
+from backend import AppSettings, ModelRouter, QueryDatabase
 
 
 class ITAssistantTests(unittest.TestCase):
@@ -52,10 +53,29 @@ class ITAssistantTests(unittest.TestCase):
         self.assertNotIn("仅用于演示", overview["answer"])
 
     def test_http_query_and_model_status(self):
-        with TestClient(app) as client:
-            self.assertEqual(client.get("/api/runtime/model").status_code, 200)
-            self.assertEqual(client.post("/api/query", json={"question": ""}).status_code, 400)
-            self.assertEqual(client.get("/api/admin/documents").status_code, 404)
+        with tempfile.TemporaryDirectory() as root:
+            project = Path(root)
+            knowledge = project / "knowledge.md"
+            knowledge.write_text("# Demo\n## VPN\n请重新登录 VPN。\n", encoding="utf-8")
+            web = project / "web" / "index.html"
+            web.parent.mkdir(parents=True)
+            web.write_text("<!doctype html>", encoding="utf-8")
+            settings = AppSettings(
+                project_root=project,
+                environment="test",
+                database_url=f"sqlite:///{(project / 'queries.db').as_posix()}",
+                knowledge_path=knowledge,
+                web_index_path=web,
+                artifact_output_path=project / "artifacts",
+                auth_mode="development",
+                auth_subject_salt="unit-test-subject-salt",
+                log_level="CRITICAL",
+            )
+
+            with TestClient(create_app(settings)) as client:
+                self.assertEqual(client.get("/api/runtime/model").status_code, 200)
+                self.assertEqual(client.post("/api/query", json={"question": ""}).status_code, 400)
+                self.assertEqual(client.get("/api/admin/documents").status_code, 404)
 
 
 if __name__ == "__main__":

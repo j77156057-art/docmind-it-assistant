@@ -35,6 +35,8 @@ class Principal:
 
     @property
     def acl_roles(self) -> tuple[str, ...]:
+        if "guest" in self.groups:
+            return ()
         implied = set(self.roles)
         if "admin" in implied:
             implied.update({"auditor", "viewer"})
@@ -44,6 +46,8 @@ class Principal:
 
     @property
     def acl_groups(self) -> tuple[str, ...]:
+        if "guest" in self.groups:
+            return ()
         return tuple(sorted(self.groups))
 
 
@@ -94,7 +98,8 @@ class OIDCAuthenticator:
                  algorithms: tuple[str, ...] = ("RS256",), leeway_seconds: int = 30,
                  key_resolver: Callable[[str], object] | None = None,
                  local_username: str = "admin", local_password_hash: str = "",
-                 local_display_name: str = "本地管理员", local_session_hours: int = 12):
+                 local_display_name: str = "本地管理员", local_session_hours: int = 12,
+                 guest_session_hours: int = 2):
         self.mode = mode
         self.issuer = issuer.rstrip("/")
         self.audience = audience
@@ -110,6 +115,7 @@ class OIDCAuthenticator:
         self.local_password_hash = local_password_hash.strip()
         self.local_display_name = local_display_name.strip()[:128]
         self.local_session_hours = max(1, min(local_session_hours, 168))
+        self.guest_session_hours = max(1, min(guest_session_hours, 24))
 
     def healthcheck(self) -> tuple[bool, str]:
         if not self.subject_salt:
@@ -160,6 +166,15 @@ class OIDCAuthenticator:
             "sub": username.strip(), "name": self.local_display_name,
             "roles": ["admin", "auditor", "viewer"], "groups": ["local"],
             "iat": now, "exp": now + self.local_session_hours * 3600,
+        }, signing_key, algorithm="HS256")
+
+    def guest_login(self) -> str:
+        now = int(time.time())
+        signing_key = hashlib.sha256(self.subject_salt.encode("utf-8")).digest()
+        return jwt.encode({
+            "sub": f"guest:{secrets.token_urlsafe(18)}", "name": "游客",
+            "roles": ["viewer"], "groups": ["guest"],
+            "iat": now, "exp": now + self.guest_session_hours * 3600,
         }, signing_key, algorithm="HS256")
 
     def _authenticate_local_token(self, token: str) -> Principal:

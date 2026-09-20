@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from admin_app import create_admin_app
 from app import create_app
-from backend import AppSettings, ModelRuntime, OIDCAuthenticator, QueryDatabase
+from backend import AppSettings, ModelRuntime, OIDCAuthenticator, Principal, QueryDatabase
 from backend.auth import hash_password
 from backend.embeddings import EmbeddingClient
 from ingestion import DocumentIngestionService
@@ -24,6 +24,7 @@ class SsoRbacAclTests(unittest.TestCase):
             settings = self.make_settings(root).model_copy(update={
                 "auth_mode": "local", "local_username": "admin",
                 "local_password_hash": SecretStr(hash_password("correct-password")),
+                "guest_login_enabled": True,
             })
             application = create_app(settings)
             with TestClient(application) as client:
@@ -37,6 +38,13 @@ class SsoRbacAclTests(unittest.TestCase):
                 me = client.get("/api/me")
                 logged_out = client.post("/api/auth/logout")
                 denied_again = client.get("/api/me")
+            with TestClient(application) as first_guest:
+                guest_login = first_guest.post("/api/auth/guest")
+                guest_me = first_guest.get("/api/me")
+                guest_ledger = first_guest.get("/api/usage/ledger")
+            with TestClient(application) as second_guest:
+                second_guest.post("/api/auth/guest")
+                second_guest_me = second_guest.get("/api/me")
 
         self.assertEqual(denied.status_code, 401)
         self.assertEqual(wrong.status_code, 401)
@@ -45,6 +53,17 @@ class SsoRbacAclTests(unittest.TestCase):
         self.assertIn("admin", me.json()["roles"])
         self.assertEqual(logged_out.status_code, 200)
         self.assertEqual(denied_again.status_code, 401)
+        self.assertEqual(guest_login.status_code, 200)
+        self.assertEqual(guest_me.json()["roles"], ["viewer"])
+        self.assertEqual(guest_me.json()["groups"], ["guest"])
+        self.assertEqual(guest_ledger.status_code, 403)
+        self.assertNotEqual(guest_me.json()["subject_id"], second_guest_me.json()["subject_id"])
+
+        principal = application.state.authenticator.authenticate({
+            "cookie": guest_login.headers["set-cookie"].split(";", 1)[0],
+        })
+        self.assertEqual(principal.acl_roles, ())
+        self.assertEqual(principal.acl_groups, ())
 
     def make_settings(self, root: str, *, auth_mode: str = "trusted_headers") -> AppSettings:
         project = Path(root)
@@ -166,6 +185,22 @@ class SsoRbacAclTests(unittest.TestCase):
                 allowed = database.hybrid_search("财务系统恢复码", vector, **identity)
                 self.assertEqual(denied, [])
                 self.assertTrue(allowed)
+
+            database.set_document_acl(
+                imported["document_id"], [("role", "viewer")],
+                actor_subject_id="admin", request_id="acl-guest",
+                access_scope="restricted",
+            )
+            viewer = Principal("viewer-1", frozenset({"viewer"}), frozenset())
+            guest = Principal("guest-1", frozenset({"viewer"}), frozenset({"guest"}))
+            self.assertTrue(database.hybrid_search(
+                "财务系统恢复码", vector, subject_id=viewer.subject_id,
+                roles=viewer.acl_roles, groups=viewer.acl_groups,
+            ))
+            self.assertEqual(database.hybrid_search(
+                "财务系统恢复码", vector, subject_id=guest.subject_id,
+                roles=guest.acl_roles, groups=guest.acl_groups,
+            ), [])
             database.dispose()
 
     def test_admin_acl_endpoint_replaces_acl_and_writes_audit_event(self):

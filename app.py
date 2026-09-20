@@ -66,6 +66,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         local_password_hash=config.local_password_hash.get_secret_value(),
         local_display_name=config.local_display_name,
         local_session_hours=config.local_session_hours,
+        guest_session_hours=config.guest_session_hours,
     )
 
     @asynccontextmanager
@@ -171,7 +172,8 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
 
     @application.get("/api/auth/config")
     async def auth_config():
-        return {"ok": True, "mode": config.auth_mode, "login_required": config.auth_mode == "local"}
+        return {"ok": True, "mode": config.auth_mode, "login_required": config.auth_mode == "local",
+                "guest_enabled": config.guest_login_enabled and config.auth_mode == "local"}
 
     @application.post("/api/auth/login")
     async def auth_login(payload: dict):
@@ -184,6 +186,18 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         response = JSONResponse({"ok": True})
         response.set_cookie("docmind_session", token, httponly=True, samesite="strict",
                             secure=config.environment == "production", max_age=config.local_session_hours * 3600)
+        return response
+
+    @application.post("/api/auth/guest")
+    async def auth_guest():
+        if config.auth_mode != "local" or not config.guest_login_enabled:
+            raise HTTPException(status_code=403, detail="游客登录未启用")
+        response = JSONResponse({"ok": True, "redirect": "/"})
+        response.set_cookie(
+            "docmind_session", authenticator.guest_login(), httponly=True,
+            samesite="strict", secure=config.environment == "production",
+            max_age=config.guest_session_hours * 3600,
+        )
         return response
 
     @application.post("/api/auth/logout")
