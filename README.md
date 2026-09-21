@@ -132,6 +132,7 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 | `GET/POST` | `/api/admin/artifacts` | auditor/admin | 查看或生成办公产物 |
 | `GET/PUT` | `/api/admin/model-config` | auditor/admin | 查看或切换运行时模型与回答策略 |
 | `GET` | `/api/admin/audit-events` | auditor | 查看管理审计记录 |
+| `GET` | `/api/admin/audit-events/export` | auditor | 导出审计事件为 CSV/JSON（支持 `start`/`end`/`action`/`target_type`/`actor` 筛选，导出动作本身写审计） |
 | `GET` | `/api/admin/governance/pending` | `document.review` | 查看待审核版本 |
 | `GET` | `/api/admin/documents/{id}/versions/{v}/preview` | `document.review` | 审核预览该版本的内容块（每次读取写审计） |
 | `POST` | `/api/admin/documents/{id}/versions/{v}/review` | `document.review` | 通过或驳回（驳回必须填写意见） |

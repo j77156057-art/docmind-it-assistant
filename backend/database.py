@@ -1810,7 +1810,11 @@ class QueryDatabase:
         ).limit(count)
         with self._sessions() as session:
             rows = session.scalars(statement).all()
-        return [{
+        return [self._audit_event_public(row) for row in rows]
+
+    @staticmethod
+    def _audit_event_public(row: AuditEventRecord) -> dict:
+        return {
             "id": row.id,
             "actor_subject_id": row.actor_subject_id,
             "action": row.action,
@@ -1819,7 +1823,43 @@ class QueryDatabase:
             "result": row.result,
             "request_id": row.request_id,
             "created_at": row.created_at.isoformat(),
-        } for row in rows]
+        }
+
+    # Upper bound on a single export so a misconfigured client cannot dump the whole table at once.
+    AUDIT_EXPORT_MAX_ROWS = 10000
+
+    def audit_events_export(self, *, start=None, end=None, action=None, target_type=None,
+                            actor=None, limit: int = 1000) -> list[dict]:
+        """Chronological audit export honouring the same capability gate as ``audit_events``.
+
+        `start`/`end` are inclusive bounds on `created_at`; string filters narrow by exact match.
+        Rows are capped at ``AUDIT_EXPORT_MAX_ROWS`` and ordered oldest-first for an audit trail.
+        """
+        count = max(1, min(int(limit), self.AUDIT_EXPORT_MAX_ROWS))
+        statement = select(AuditEventRecord)
+        if start is not None:
+            statement = statement.where(AuditEventRecord.created_at >= self._normalize_dt(start))
+        if end is not None:
+            statement = statement.where(AuditEventRecord.created_at <= self._normalize_dt(end))
+        if action:
+            statement = statement.where(AuditEventRecord.action == action[:64])
+        if target_type:
+            statement = statement.where(AuditEventRecord.target_type == target_type[:32])
+        if actor:
+            statement = statement.where(AuditEventRecord.actor_subject_id == actor[:64])
+        statement = statement.order_by(AuditEventRecord.id.asc()).limit(count)
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._audit_event_public(row) for row in rows]
+
+    @staticmethod
+    def _normalize_dt(value):
+        """Coerce a bound datetime to UTC so SQLite (naive string) and Postgres (timestamptz) compare consistently."""
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     @staticmethod
     def _cosine(left, right) -> float:

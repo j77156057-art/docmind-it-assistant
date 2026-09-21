@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import csv
+import io
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -12,7 +16,7 @@ import uuid
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -921,6 +925,65 @@ def create_admin_app(settings: AppSettings | None = None,
     async def audit_events(limit: int = 100,
                            _principal: Principal = Depends(require_capability("audit.read"))):
         return {"ok": True, "items": database.audit_events(limit)}
+
+    @application.get("/api/admin/audit-events/export")
+    async def audit_events_export(
+        export_format: str = "csv",
+        start: datetime | None = None,
+        end: datetime | None = None,
+        action: str | None = None,
+        target_type: str | None = None,
+        actor: str | None = None,
+        limit: int = 1000,
+        principal: Principal = Depends(require_capability("audit.read")),
+    ):
+        if export_format not in {"csv", "json"}:
+            raise HTTPException(status_code=400, detail="export_format 仅支持 csv 或 json")
+        rows = database.audit_events_export(
+            start=start, end=end, action=action, target_type=target_type,
+            actor=actor, limit=limit,
+        )
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        if export_format == "json":
+            content = json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
+            media_type = "application/json"
+            filename = f"audit-export-{stamp}.json"
+        else:
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(
+                ["id", "created_at", "actor_subject_id", "action",
+                 "target_type", "target_ref", "result", "request_id"],
+            )
+            for row in rows:
+                writer.writerow([
+                    row["id"], row["created_at"], row["actor_subject_id"], row["action"],
+                    row["target_type"], row["target_ref"], row["result"], row["request_id"],
+                ])
+            # BOM so Excel opens UTF-8 CSV with CJK intact.
+            content = buffer.getvalue().encode("utf-8-sig")
+            media_type = "text/csv; charset=utf-8"
+            filename = f"audit-export-{stamp}.csv"
+        summary = f"format={export_format};rows={len(rows)}"
+        if action:
+            summary += f";action={action}"
+        if target_type:
+            summary += f";target_type={target_type}"
+        if actor:
+            summary += f";actor={actor}"
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="audit.export",
+            target_type="audit_export",
+            target_ref=summary[:512],
+            result="success",
+            request_id=request_id_context.get() or "",
+        )
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
 
     @application.get("/api/admin/model-config")
     async def model_config(_principal: Principal = Depends(require_capability("usage.read"))):
