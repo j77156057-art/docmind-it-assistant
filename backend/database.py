@@ -579,6 +579,25 @@ class QueryDatabase:
                 version.status = "queued"
                 version.error_code = None
 
+    def reindex_document_version(self, version_id: int) -> None:
+        """Take an already-indexed version offline the retrieval path and re-queue it.
+
+        Re-embedding must start from a ``queued`` version so ``process_version`` can claim it for
+        processing; an ``indexed`` version would be rejected. The version leaves retrieval while it
+        is being re-embedded and returns on success.
+        """
+        with self._sessions.begin() as session:
+            version = session.get(DocumentVersionRecord, int(version_id))
+            if version is None:
+                raise ValueError("文档版本不存在")
+            if version.status in {"rejected", "withdrawn"}:
+                raise GovernanceError("version_not_reindexable", "已驳回或已撤回的版本不可重建索引")
+            version.status = "queued"
+            version.error_code = None
+            version.withdrawn_at = None
+            version.withdrawn_reason = None
+            version.indexed_at = None
+
     @staticmethod
     def _job_public(row: IngestionJobRecord) -> dict:
         return {
@@ -597,6 +616,7 @@ class QueryDatabase:
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "next_attempt_at": row.next_attempt_at.isoformat() if row.next_attempt_at else None,
             "heartbeat_at": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
         }
 
@@ -631,6 +651,7 @@ class QueryDatabase:
                 existing.heartbeat_at = None
                 existing.started_at = None
                 existing.finished_at = None
+                existing.next_attempt_at = None
                 existing.payload = dict(payload or {})
                 existing.request_id = (request_id or "")[:128]
                 if created_by_subject_id:
@@ -672,7 +693,9 @@ class QueryDatabase:
                            heartbeat_at = :now, started_at = COALESCE(started_at, :now)
                      WHERE id = (
                          SELECT id FROM ingestion_jobs
-                          WHERE status = 'queued' AND attempts < max_attempts
+                          WHERE status = 'queued'
+                            AND attempts < max_attempts
+                            AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
                           ORDER BY priority, id
                           FOR UPDATE SKIP LOCKED
                           LIMIT 1
@@ -688,6 +711,8 @@ class QueryDatabase:
                     .where(
                         IngestionJobRecord.status == "queued",
                         IngestionJobRecord.attempts < IngestionJobRecord.max_attempts,
+                        IngestionJobRecord.next_attempt_at.is_(None)
+                        | (IngestionJobRecord.next_attempt_at <= now),
                     )
                     .order_by(IngestionJobRecord.priority, IngestionJobRecord.id)
                     .limit(1)
@@ -747,10 +772,16 @@ class QueryDatabase:
             return bool(updated)
 
     def fail_ingestion_job(self, job_id: int, error_code: str, *,
-                           retryable: bool) -> dict:
-        """Record a failure and decide between another attempt and a terminal failure."""
+                           retryable: bool, backoff_max_seconds: int = 1800) -> dict:
+        """Record a failure and decide between another attempt and a terminal failure.
+
+        A retryable failure writes ``next_attempt_at`` using exponential backoff (capped at
+        ``backoff_max_seconds``) so a broken provider is not hammered in a tight loop. The cap
+        comes from the worker's settings; the in-process backoff in the worker is only a safety net.
+        """
         now = datetime.now(timezone.utc)
         code = (error_code or "job_failed")[:64]
+        cap = max(0, int(backoff_max_seconds))
         with self._sessions.begin() as session:
             job = session.get(IngestionJobRecord, int(job_id))
             if job is None:
@@ -762,9 +793,12 @@ class QueryDatabase:
             job.heartbeat_at = None
             if can_retry:
                 job.status = "queued"
+                delay = min(cap, 2 ** max(0, job.attempts - 1) * 30)
+                job.next_attempt_at = now + timedelta(seconds=delay)
             else:
                 job.status = "failed"
                 job.finished_at = now
+                job.next_attempt_at = None
             session.flush()
             return self._job_public(job)
 

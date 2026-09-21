@@ -408,6 +408,10 @@ class IngestionJobRecord(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="重试最早可执行时间；NULL 表示可立即认领。指数退避落库，避免坏上游被紧循环打爆。",
+    )
 
 
 class AuditEventRecord(Base):

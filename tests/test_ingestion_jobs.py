@@ -31,7 +31,8 @@ CONTENT = "## 打印机驱动\nzebra printer driver 需要重新安装。\n"
 
 class IngestionJobTests(unittest.TestCase):
     def make_settings(self, root: str, *, governance_mode: str = "direct",
-                      worker_enabled: bool = True, max_attempts: int = 3) -> AppSettings:
+                      worker_enabled: bool = True, max_attempts: int = 3,
+                      backoff_max_seconds: int = 1800) -> AppSettings:
         project = Path(root)
         knowledge = project / "knowledge.md"
         knowledge.write_text("# IT\n", encoding="utf-8")
@@ -51,6 +52,7 @@ class IngestionJobTests(unittest.TestCase):
             governance_mode=governance_mode,
             ingestion_worker_enabled=worker_enabled,
             ingestion_max_attempts=max_attempts,
+            ingestion_backoff_max_seconds=backoff_max_seconds,
             ingestion_job_timeout_seconds=600,
             ingestion_heartbeat_seconds=30,
         )
@@ -141,7 +143,7 @@ class IngestionJobTests(unittest.TestCase):
                 self.assertFalse(database.heartbeat_ingestion_job(job["job_id"], "worker-b"))
 
                 retryable = database.fail_ingestion_job(
-                    job["job_id"], "embedding_timeout", retryable=True,
+                    job["job_id"], "embedding_timeout", retryable=True, backoff_max_seconds=0,
                 )
                 self.assertEqual((retryable["status"], retryable["attempts"]), ("queued", 1))
                 self.assertEqual(retryable["last_error_code"], "embedding_timeout")
@@ -149,7 +151,7 @@ class IngestionJobTests(unittest.TestCase):
                 database.reset_document_version_for_retry(version["version_id"])
                 self.assertEqual(database.claim_ingestion_job("worker-a")["attempts"], 2)
                 terminal = database.fail_ingestion_job(
-                    job["job_id"], "embedding_timeout", retryable=True,
+                    job["job_id"], "embedding_timeout", retryable=True, backoff_max_seconds=0,
                 )
                 self.assertEqual((terminal["status"], terminal["attempts"]), ("failed", 2))
                 non_retryable = database.fail_ingestion_job(
@@ -351,7 +353,7 @@ class IngestionJobTests(unittest.TestCase):
 
     def test_transient_embedding_failure_is_retried_then_fails(self):
         with tempfile.TemporaryDirectory() as root:
-            settings = self.make_settings(root, max_attempts=2)
+            settings = self.make_settings(root, max_attempts=2, backoff_max_seconds=0)
             application = create_admin_app(settings)
             editor = self.headers("editor-1", "knowledge_editor")
             administrator = self.headers("administrator", "admin")
@@ -399,7 +401,7 @@ class IngestionJobTests(unittest.TestCase):
             worker, worker_database = build_worker(settings)
             try:
                 # A job type that no worker implements yet must fail loudly, not silently succeed.
-                database.enqueue_ingestion_job(job_type="reindex", document_id=None)
+                database.enqueue_ingestion_job(job_type="evaluate", document_id=None)
                 outcome = worker.run_once()
                 self.assertEqual(outcome["status"], "failed")
                 self.assertEqual(outcome["error_code"], "job_type_unsupported")
@@ -424,6 +426,54 @@ class IngestionJobTests(unittest.TestCase):
             finally:
                 worker_database.dispose()
                 database.dispose()
+
+    def test_reindex_and_withdraw_jobs_succeed(self):
+        """reindex re-embeds an indexed version in place; withdraw takes it offline with an audit trail."""
+        with tempfile.TemporaryDirectory() as root:
+            settings = self.make_settings(root)
+            application = create_admin_app(settings)
+            editor = self.headers("editor-1", "knowledge_editor")
+            embeddings = EmbeddingClient(
+                mode="hash", provider="builtin", model="hash-1024",
+                base_url="http://hash.local", api_key="test",
+            )
+            with TestClient(application) as client:
+                a = self.import_document(client, editor, source_key="manual/reindex-a")
+                b = self.import_document(client, editor, source_key="manual/withdraw-b")
+                self.assertEqual(a.status_code, 202)
+                self.assertEqual(b.status_code, 202)
+
+            worker, worker_database = self.worker_with_client(settings, embeddings)
+            try:
+                self.assertEqual(worker.drain(), 2)
+                succeeded = worker_database.list_ingestion_jobs(status="succeeded")
+                self.assertEqual(len(succeeded), 2)
+                va = succeeded[0]["version_id"]
+                da = succeeded[0]["document_id"]
+                vb = succeeded[1]["version_id"]
+                db2 = succeeded[1]["document_id"]
+
+                # reindex re-embedds an already-indexed version and leaves it indexed.
+                worker_database.enqueue_ingestion_job(
+                    job_type="reindex", document_id=da, version_id=va,
+                    created_by_subject_id="editor-1", request_id="r-reindex",
+                )
+                self.assertEqual(worker.drain(), 1)
+                self.assertEqual(worker_database.document_version_reference(va)["status"], "indexed")
+
+                # withdraw takes the version offline and writes an audit trail.
+                worker_database.enqueue_ingestion_job(
+                    job_type="withdraw", document_id=db2, version_id=vb,
+                    created_by_subject_id="editor-1", request_id="r-withdraw",
+                )
+                self.assertEqual(worker.drain(), 1)
+                self.assertEqual(worker_database.document_version_reference(vb)["status"], "withdrawn")
+
+                actions = [e["action"] for e in worker_database.audit_events(limit=50)]
+                self.assertIn("document_withdraw", actions)
+                self.assertIn("document_index_completed", actions)
+            finally:
+                worker_database.dispose()
 
     def test_job_endpoints_enforce_capabilities(self):
         with tempfile.TemporaryDirectory() as root:

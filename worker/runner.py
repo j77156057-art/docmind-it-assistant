@@ -111,9 +111,9 @@ class IngestionWorker:
                 processed += 1
                 if max_jobs and processed >= int(max_jobs):
                     return processed
-                # A retryable failure normally goes straight back to ``queued``. Back off in-process
-                # so a broken provider cannot be hammered in a tight loop. A durable
-                # ``next_attempt_at`` column is deliberately left to a later batch.
+                # A retryable failure is re-queued with ``next_attempt_at`` already set in the
+                # database (exponential backoff, capped). This in-process sleep is only a safety net
+                # for the window before the next poll.
                 if outcome["status"] == "queued" and outcome.get("retryable"):
                     retry_backoff = min(30.0, max(interval, retry_backoff * 2 or interval))
                     sleep(retry_backoff)
@@ -127,12 +127,15 @@ class IngestionWorker:
         request_id = job.get("request_id") or f"job-{job_id}"
         token = request_id_context.set(request_id)
         try:
-            if job["job_type"] != "import":
-                # Explicitly fail instead of pretending to succeed: reindex/withdraw/evaluate
-                # arrive in later batches.
+            if job["job_type"] == "withdraw":
+                return self._execute_withdraw(job)
+            if job["job_type"] not in ("import", "reindex"):
+                # evaluate and any unknown type fail loudly rather than pretending to succeed.
                 raise DocumentProcessingError("job_type_unsupported", retryable=False)
             if not version_id or not job.get("document_id"):
                 raise DocumentProcessingError("job_target_missing", retryable=False)
+            if job["job_type"] == "reindex":
+                self.database.reindex_document_version(version_id)
             reference = self.database.document_version_reference(version_id)
             source_path = self.sources.resolve(reference["document_id"], reference["version"])
             if source_path is None:
@@ -194,7 +197,10 @@ class IngestionWorker:
 
     def _record_failure(self, job: dict, code: str, *, retryable: bool,
                         detail: str = "") -> dict:
-        outcome = self.database.fail_ingestion_job(job["job_id"], code, retryable=retryable)
+        outcome = self.database.fail_ingestion_job(
+            job["job_id"], code, retryable=retryable,
+            backoff_max_seconds=self.settings.ingestion_backoff_max_seconds,
+        )
         version_id = job.get("version_id")
         if version_id:
             if outcome["status"] == "queued":
@@ -223,4 +229,42 @@ class IngestionWorker:
             "error_code": code,
             "attempts": outcome["attempts"],
             "retryable": retryable,
+        }
+
+    def _execute_withdraw(self, job: dict) -> dict:
+        """Take a version offline without re-embedding it.
+
+        The governance decision lives in ``database.withdraw_document_version`` (reason required,
+        ACL enforced); the worker just carries it out and records the audit trail.
+        """
+        job_id = job["job_id"]
+        version_id = job.get("version_id")
+        if not version_id:
+            raise DocumentProcessingError("job_target_missing", retryable=False)
+        reference = self.database.document_version_reference(version_id)
+        reason = (job.get("payload") or {}).get("reason") or "scheduled withdraw"
+        actor = (job.get("created_by_subject_id") or "system:worker")[:64]
+        self.database.withdraw_document_version(
+            document_id=reference["document_id"], version=reference["version"],
+            actor_subject_id=actor, reason=str(reason)[:512],
+        )
+        self.database.complete_ingestion_job(job_id, self.worker_id)
+        self.database.record_audit_event(
+            actor_subject_id=actor,
+            action="document_withdraw",
+            target_type="document",
+            target_ref=f"{reference['document_id']}:v{reference['version']}",
+            result="success",
+            request_id=job.get("request_id") or f"job-{job_id}",
+        )
+        log_event(
+            LOGGER, logging.INFO, "ingestion_job_withdrawn",
+            job_id=job_id, version_id=version_id,
+        )
+        return {
+            "job_id": job_id,
+            "status": "succeeded",
+            "job_type": "withdraw",
+            "index_status": "withdrawn",
+            "chunk_count": 0,
         }
