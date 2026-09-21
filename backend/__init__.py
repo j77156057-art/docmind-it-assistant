@@ -5,6 +5,7 @@ from .auth import (
 )
 from .database import GovernanceError, QueryDatabase
 from .document_sources import DocumentSourceError, DocumentSourceStore
+from .evaluation import EvaluationError, EvaluationService
 from .embeddings import EmbeddingClient, EmbeddingError, EmbeddingResult, build_embedding_client
 from .logging_config import JsonFormatter, configure_logging, log_event, request_id_context
 from .model_gateway import GatewayAttempt, GatewayResult, ModelGateway, ModelGatewayError
@@ -20,6 +21,7 @@ __all__ = [
     "GovernanceError",
     "ModelRouter", "QueryDatabase", "PROVIDERS", "ProviderSpec",
     "DocumentSourceError", "DocumentSourceStore", "ModelRuntime", "ModelRuntimeError",
+    "EvaluationError", "EvaluationService",
     "JsonFormatter", "configure_logging", "log_event", "request_id_context",
     "GatewayAttempt", "GatewayResult", "ModelGateway", "ModelGatewayError",
     "EmbeddingClient", "EmbeddingError", "EmbeddingResult", "build_embedding_client",

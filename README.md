@@ -135,6 +135,13 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 | `GET` | `/api/admin/ingestion/jobs` | `document.read` | 查看索引任务与队列统计 |
 | `POST` | `/api/admin/ingestion/jobs/{id}/retry` | `document.write` | 重新排队失败或已取消的任务 |
 | `POST` | `/api/admin/ingestion/jobs/{id}/cancel` | `document.write` | 取消尚未开始的任务 |
+| `GET` | `/api/admin/evaluation/cases` | `document.read` | 查看黄金题与门禁阈值 |
+| `PUT` | `/api/admin/evaluation/cases` | `evaluation.run` | 新增或更新黄金题（按 `case_key` 覆盖） |
+| `DELETE` | `/api/admin/evaluation/cases/{id}` | `evaluation.run` | 删除从未被评测引用的用例（有历史则 409） |
+| `POST` | `/api/admin/evaluation/runs` | `evaluation.run` | 立即运行评测（`manual` / `pre_publish`） |
+| `GET` | `/api/admin/evaluation/runs` | `document.read` | 查看评测运行与门禁结论 |
+| `GET` | `/api/admin/evaluation/runs/{id}` | `document.read` | 查看逐题结果 |
+
 ## 知识治理：从"导入即发布"到审批发布
 
 角色分两层：等级角色 `viewer < auditor < admin` 决定后台读取与配置权限；治理角色按**能力**授权，与等级正交，因此可以强制职责分离。
@@ -142,6 +149,7 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 | 角色 | 能力 |
 |---|---|
 | `knowledge_editor` | `document.write`（上传、发起变更） |
+| `knowledge_reviewer` | `document.review`、`evaluation.run` |
 | `knowledge_publisher` | `document.publish`、`document.withdraw`、`document.rollback` |
 
 `admin` 拥有导入与 ACL/模型配置能力，但**不自动拥有审核与发布能力**：单人环境需显式设置 `IT_GOVERNANCE_ALLOW_ADMIN_OVERRIDE=true`，并在操作时勾选越权开关，动作会记录 `is_override` 标记。
@@ -230,11 +238,42 @@ RUN python -m pip install --no-cache-dir -r requirements-worker.txt
 
 "发布"不应只靠人工直觉。黄金题集让每次发布前都有可量化结论：
 
+```dotenv
+IT_EVAL_GATE_MODE=warn          # off | warn | block
+IT_EVAL_ALLOW_OVERRIDE=false
+IT_EVAL_MIN_RECALL=0.8
+IT_EVAL_MIN_CITATION_ACCURACY=0.9
+IT_EVAL_MAX_REGRESSION=0.05
+IT_EVAL_TOP_K=5
+```
+
+**最重要的一条设计约束：评测复用生产检索路径。** 执行器调用的是 `HybridRetriever.retrieve`
+（同一套嵌入、ACL 组装、混合检索与降级），而不是另写一份 SQL。否则指标描述的是"没人用的系统"，
+这是评测体系最常见的失败方式——`tests/test_evaluation_gate.py` 里有一条测试直接统计
+`hybrid_search` 的调用次数来钉住这一点。
+
+指标定义（都是"应答题"为分母，因此 `citation_accuracy ≤ recall_at_k` 恒成立）：
+
 | 指标 | 定义 |
 |---|---|
 | `recall@k` | 命中期望文档的题数 ÷ 需要命中的题数 |
+| `citation_accuracy` | 命中且章节定位正确的题数 ÷ 需要命中的题数 |
+| `refusal_accuracy` | 正确拒答的题数 ÷ 应拒答题数 |
+
 门禁行为：
 
+- `off`：不执行发布前评测，`gate_result` 记为 `NULL`——"没评测"与"评测通过"永不混淆。
+- `warn`：照常发布，但记录结论与原因。
+- `block`：指标不达标（或相对基线回退超过 `IT_EVAL_MAX_REGRESSION`）时**阻断发布**，返回 `409`。
+- 黄金题为空时只告警不阻断：否则第一天谁都无法发布；但它在界面上是明确的"未判定"，不是静默通过。
+
+**越权放行需要三件事同时成立**：请求显式带 `override: true`、`IT_EVAL_ALLOW_OVERRIDE=true`、
+且主体同时持有 `document.publish` 与 `governance.override`。只持有发布权不能绕过质量门禁——
+这正是把"能发布"和"能无视度量"分开的原因。放行会写入一条 `override_gate` 审批记录（`is_override=true`）。
+
+评测的身份是固定的（`system:evaluation` + `viewer` 角色），因此结论不取决于谁点了按钮。
+代价是：**黄金题只能引用 viewer 可见的文档**；受限文档若要在评测中命中，需要给它加上
+`role:viewer`（或等待后续的"知识域"模型，见域 B）。
 
 ## 模型与密钥
 

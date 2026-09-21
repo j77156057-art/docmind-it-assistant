@@ -23,6 +23,8 @@ _EXTRA_FIELDS = (
     "worker_id", "engine", "publish_on_success", "poll_seconds", "max_attempts",
     "job_id", "job_type", "status", "error_code", "attempts", "terminal", "retryable",
     "count", "chunk_count", "version_id",
+    # Evaluation gate
+    "run_id", "trigger", "gate_mode", "gate_result", "total", "recall", "citation",
 )
 
 

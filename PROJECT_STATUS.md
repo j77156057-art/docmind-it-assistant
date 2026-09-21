@@ -15,6 +15,7 @@
 - 知识治理：版本状态机（`queued/processing/staged/indexed/rejected/withdrawn/superseded/failed`）、能力制治理角色、审批发布与职责分离、作废与回滚、审核预览与 `document_version_reviews` 留痕。
 - 异步索引：`ingestion_jobs` 业务队列、`worker` 进程（抢占、心跳、僵尸回收、可重试性分类）、导入接口 `202 + job_id`、任务重试/取消、队列健康诊断。
 - 可选 LangGraph 编排引擎：分批向量化 + checkpoint 断点续跑、独立 checkpoint 存储（不污染应用 schema）、从 `app.py` 出发的 import 闭包边界守卫。
+- 发布前评测门：`evaluation_cases` / `evaluation_runs` / `evaluation_case_results`，复用生产检索路径的 recall@k、引用命中率、拒答正确率与基线回归，`off/warn/block` 三种门禁模式与 `override_gate` 留痕。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 
@@ -32,6 +33,7 @@
 - 编排框架的 checkpoint 不写入应用 schema（独立 SQLite 文件或独立 PostgreSQL schema），避免 `alembic check` 失真。
 - 代码不设置 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING`；LangSmith 默认关闭，启用需先做脱敏评审。
 - 评测用例与逐题结果只保存问题、计数与排名，不保存模型回答或知识正文。
+- 越权放行评测门必须同时满足：配置开关打开、主体同时持有 `document.publish` 与 `governance.override`、请求显式声明，并写入 `override_gate` 审批记录。
 - `development` 认证只允许配置为回环地址；生产配置强制 OIDC。
 - API Key 只从进程环境或未提交的 `.env` 读取。
 - 日志和审计不保存问题正文、回答正文、Token 原文或供应商错误正文。
@@ -52,10 +54,10 @@ node --check web/admin.js
 先设置 `IT_DATABASE_URL=sqlite:///data/queries.db`，或直接用 `.\scripts\dev.ps1 start`
 （它会覆盖为项目内 SQLite 并自动执行迁移，同时启动查询、管理与 Worker 三个进程）。
 
+当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验。
 
 ## 后续工作
 
-1. 将同步导入改为异步 Worker，并增加审批发布流程。
 1. 补充 `reindex` / `withdraw` / `evaluate` 任务类型（含异步评测），并为可重试失败增加持久化退避（`next_attempt_at`）。
 2. 为 LangGraph 的 PostgreSQL checkpoint 路径补集成测试（需要 CI 中的 PostgreSQL 服务）。
 3. 增加浏览器 OIDC Authorization Code + PKCE 登录。

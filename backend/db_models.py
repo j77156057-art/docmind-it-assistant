@@ -38,6 +38,13 @@ JOB_TYPES = ("import", "reindex", "withdraw", "evaluate")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
 ACTIVE_JOB_STATUSES = ("queued", "running")
 
+# Evaluation-gate vocabulary. A run is either a manual quality check or the gate that guards a
+# publish. `gate_result` is NULL when the gate is switched off, so "not evaluated" is never
+# confused with "evaluated and passed".
+EVAL_TRIGGERS = ("manual", "pre_publish", "scheduled")
+EVAL_STATUSES = ("running", "succeeded", "failed")
+GATE_MODES = ("off", "warn", "block")
+GATE_RESULTS = ("pass", "warn", "block", "overridden")
 # Statuses that may never be returned by any retrieval path.
 UNPUBLISHED_STATUSES = tuple(
     status for status in VERSION_STATUSES if status != "indexed"
@@ -266,6 +273,96 @@ class RuntimeProviderCredentialRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
     )
+
+
+class EvaluationCaseRecord(Base):
+    """One golden question. Test data, owned by the knowledge team — never user content."""
+
+    __tablename__ = "evaluation_cases"
+    __table_args__ = (
+        UniqueConstraint("case_key", name="uq_evaluation_cases_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    expect_refusal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    expected_document_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    expected_heading: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    tags: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by_subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class EvaluationRunRecord(Base):
+    """One execution of the golden set, optionally acting as the gate for a version."""
+
+    __tablename__ = "evaluation_runs"
+    __table_args__ = (
+        CheckConstraint(_in_clause("trigger", EVAL_TRIGGERS), name="ck_evaluation_runs_trigger"),
+        CheckConstraint(_in_clause("status", EVAL_STATUSES), name="ck_evaluation_runs_status"),
+        CheckConstraint(_in_clause("gate_mode", GATE_MODES), name="ck_evaluation_runs_gate_mode"),
+        CheckConstraint(
+            "gate_result IS NULL OR " + _in_clause("gate_result", GATE_RESULTS),
+            name="ck_evaluation_runs_gate_result",
+        ),
+        Index("ix_evaluation_runs_version_id", "document_version_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    document_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=True,
+    )
+    gate_mode: Mapped[str] = mapped_column(String(8), nullable=False)
+    gate_result: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    total_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    passed_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recall_at_k: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    citation_accuracy: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    refusal_accuracy: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    baseline_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="SET NULL"), nullable=True,
+    )
+    gate_reason: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    created_by_subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class EvaluationCaseResultRecord(Base):
+    """Per-case outcome. ``detail`` holds counters and ranks only — never answer text."""
+
+    __tablename__ = "evaluation_case_results"
+    __table_args__ = (
+        UniqueConstraint("run_id", "case_id", name="uq_evaluation_case_results_case"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    case_id: Mapped[int] = mapped_column(
+        ForeignKey("evaluation_cases.id", ondelete="RESTRICT"), nullable=False, index=True,
+    )
+    retrieved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    matched_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    citation_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    refusal_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
 class IngestionJobRecord(Base):

@@ -39,6 +39,7 @@
         <button class="nav-item active" data-view="documents"><svg><use href="#i-file"/></svg><span>文档库</span></button>
         <button class="nav-item" data-view="governance" id="governanceNav" hidden><svg><use href="#i-shield"/></svg><span>知识治理</span></button>
         <button class="nav-item" data-view="jobs" id="jobsNav" hidden><svg><use href="#i-activity"/></svg><span>导入任务</span></button>
+        <button class="nav-item" data-view="evaluation" id="evaluationNav" hidden><svg><use href="#i-audit"/></svg><span>评测门</span></button>
         <button class="nav-item" data-view="artifacts"><svg><use href="#i-sparkles"/></svg><span>文档生成</span></button>
         <button class="nav-item" data-view="audit"><svg><use href="#i-audit"/></svg><span>审计记录</span></button>
         <button class="nav-item" data-view="system"><svg><use href="#i-activity"/></svg><span>系统状态</span></button>
@@ -198,11 +199,17 @@
         </div>
       </section>
 
+      <section class="view" id="view-evaluation">
         <div class="section-bar">
           <div><strong>黄金题集</strong><span id="caseCount">0 条</span></div>
           <div class="job-filters">
             <span class="status-pill" id="gateModePill">-</span>
             <span class="status-pill" id="thresholdPill">-</span>
+            <button class="secondary-button" id="runEvaluation" hidden>运行评测</button>
+            <button class="primary-button" id="openCase" hidden><svg><use href="#i-plus"/></svg><span>新增用例</span></button>
+          </div>
+        </div>
+        <p class="reason-hint" id="evaluationHint">评测复用生产检索路径（同一嵌入、ACL 与混合检索），因此结论与线上一致。</p>
         <div class="table-region">
           <table class="data-table">
             <thead><tr><th>用例</th><th>问题</th><th>期望文档</th><th>期望章节</th><th>类型</th><th>状态</th><th><span class="sr-only">操作</span></th></tr></thead>
@@ -319,6 +326,15 @@
   <dialog id="caseDialog">
     <form method="dialog" id="caseForm">
       <div class="dialog-head"><div><span class="eyebrow">黄金题</span><h2 id="caseDialogTitle">新增用例</h2></div><button type="button" class="icon-button" id="closeCase" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+      <div class="preview-body">
+        <label class="field"><span>用例标识</span><input name="case_key" maxlength="64" required placeholder="vpn-driver"></label>
+        <label class="field"><span>问题</span><input name="question" maxlength="2000" required placeholder="VPN 连接失败怎么办"></label>
+        <label class="field"><span><input type="checkbox" name="expect_refusal"> 这是应拒答题（知识库中没有答案）</span></label>
+        <label class="field"><span>期望命中文档来源标识</span><input name="expected_document_key" maxlength="512" placeholder="manual/vpn"></label>
+        <label class="field"><span>期望章节（可留空）</span><input name="expected_heading" maxlength="512" placeholder="连接失败排查"></label>
+        <label class="field"><span>标签（可留空）</span><input name="tags" maxlength="256" placeholder="vpn"></label>
+        <label class="field"><span><input type="checkbox" name="active" checked> 启用该用例</span></label>
+      </div>
       <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelCase">取消</button><button type="submit" class="primary-button" id="saveCase">保存用例</button></div>
     </form>
   </dialog>

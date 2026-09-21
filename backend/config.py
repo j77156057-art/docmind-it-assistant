@@ -121,6 +121,12 @@ class AppSettings(BaseModel):
     ingestion_max_attempts: int = Field(default=3, ge=1, le=10)
     ingestion_job_timeout_seconds: int = Field(default=600, ge=30, le=86400)
     ingestion_heartbeat_seconds: int = Field(default=30, ge=5, le=3600)
+    evaluation_gate_mode: Literal["off", "warn", "block"] = "warn"
+    evaluation_allow_override: bool = False
+    evaluation_min_recall: float = Field(default=0.8, ge=0.0, le=1.0)
+    evaluation_min_citation_accuracy: float = Field(default=0.9, ge=0.0, le=1.0)
+    evaluation_max_regression: float = Field(default=0.05, ge=0.0, le=1.0)
+    evaluation_top_k: int = Field(default=5, ge=1, le=20)
     auth_mode: Literal["development", "trusted_headers", "oidc", "local"] = "development"
     local_username: str = "admin"
     local_password_hash: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
@@ -289,6 +295,14 @@ class AppSettings(BaseModel):
             ingestion_max_attempts=int(read("IT_INGESTION_MAX_ATTEMPTS", "3")),
             ingestion_job_timeout_seconds=int(read("IT_INGESTION_JOB_TIMEOUT_SECONDS", "600")),
             ingestion_heartbeat_seconds=int(read("IT_INGESTION_HEARTBEAT_SECONDS", "30")),
+            evaluation_gate_mode=read("IT_EVAL_GATE_MODE", "warn").strip().lower(),
+            evaluation_allow_override=_bool(read("IT_EVAL_ALLOW_OVERRIDE", "false")),
+            evaluation_min_recall=float(read("IT_EVAL_MIN_RECALL", "0.8")),
+            evaluation_min_citation_accuracy=float(
+                read("IT_EVAL_MIN_CITATION_ACCURACY", "0.9"),
+            ),
+            evaluation_max_regression=float(read("IT_EVAL_MAX_REGRESSION", "0.05")),
+            evaluation_top_k=int(read("IT_EVAL_TOP_K", "5")),
             auth_mode=read("IT_AUTH_MODE", "development").strip().lower(),
             local_username=read("IT_LOCAL_USERNAME", "admin").strip(),
             local_password_hash=SecretStr(read("IT_LOCAL_PASSWORD_HASH", "").strip()),
@@ -343,6 +357,11 @@ class AppSettings(BaseModel):
             "ingestion_poll_seconds": self.ingestion_poll_seconds,
             "ingestion_max_attempts": self.ingestion_max_attempts,
             "ingestion_job_timeout_seconds": self.ingestion_job_timeout_seconds,
+            "evaluation_gate_mode": self.evaluation_gate_mode,
+            "evaluation_allow_override": self.evaluation_allow_override,
+            "evaluation_min_recall": self.evaluation_min_recall,
+            "evaluation_min_citation_accuracy": self.evaluation_min_citation_accuracy,
+            "evaluation_max_regression": self.evaluation_max_regression,
             "auth_mode": self.auth_mode,
             "log_level": self.log_level,
             "log_json": self.log_json,

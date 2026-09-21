@@ -162,6 +162,8 @@ class HealthAndLoggingTests(unittest.TestCase):
         record.engine = "langgraph"
         record.worker_id = "w-1"
         record.run_id = 3
+        record.gate_result = "block"
+        record.recall = 0.6667
         # Not on the allowlist: these must never appear.
         record.question = "password-is-secret"
         record.detail = "document body"
@@ -176,6 +178,9 @@ class HealthAndLoggingTests(unittest.TestCase):
         self.assertIs(payload["retryable"], False)
         self.assertEqual(payload["engine"], "langgraph")
         self.assertEqual(payload["worker_id"], "w-1")
+        self.assertEqual(payload["run_id"], 3)
+        self.assertEqual(payload["gate_result"], "block")
+        self.assertEqual(payload["recall"], 0.6667)
         for leaked in ("question", "detail", "answer", "password-is-secret", "document body"):
             self.assertNotIn(leaked, json.dumps(payload))
 

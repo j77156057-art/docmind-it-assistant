@@ -2,7 +2,7 @@
   'use strict';
 
   const $ = id => document.getElementById(id);
-  const state = { me: null, documents: [], selected: null, acl: null, artifacts: [], audit: [], modelConfig: null, view: 'documents' };
+  const state = { me: null, documents: [], selected: null, acl: null, artifacts: [], audit: [], modelConfig: null, pendingReviews: [], preview: null, jobs: [], queue: null, cases: [], runs: [], evaluationMeta: null, view: 'documents' };
   const viewMeta = {
     documents: ['文档库', '版本、发布状态与访问权限'],
     governance: ['知识治理', '审批、发布、作废与回滚'],
@@ -12,8 +12,8 @@
     audit: ['审计记录', '管理操作与请求追踪'],
     system: ['系统状态', '服务依赖与身份上下文'],
   };
-  const statusText = { indexed: '已发布', pending: '处理中', failed: '失败', superseded: '已替代' };
-  const actionText = { document_acl_replace: '更新权限', document_import: '导入文档', document_source_view: '查看原文件', document_source_download: '下载原文件', artifact_create: '生成文件', model_config_update: '切换模型' };
+  const statusText = { indexed: '已发布', queued: '待处理', processing: '处理中', staged: '待审核', rejected: '已驳回', withdrawn: '已作废', failed: '失败', superseded: '已替代', running: '运行中', succeeded: '已完成', cancelled: '已取消', pass: '通过', warn: '警告', block: '阻断', overridden: '已越权放行' };
+  const actionText = { document_acl_replace: '更新权限', document_import: '导入文档', document_source_view: '查看原文件', document_source_download: '下载原文件', artifact_create: '生成文件', model_config_update: '切换模型', document_review_approve: '审核通过', document_review_reject: '审核驳回', document_publish: '发布版本', document_withdraw: '作废版本', document_rollback: '回滚版本', document_version_preview: '预览版本', ingestion_job_retry: '重试任务', ingestion_job_cancel: '取消任务', document_index_completed: '索引完成', document_index_failed: '索引失败', evaluation_case_save: '保存评测用例', evaluation_case_delete: '删除评测用例', evaluation_run: '运行评测' };
   const typeText = { user: '用户', group: '用户组', role: '角色' };
   const artifactExtensions = { docx: 'docx', pdf: 'pdf', pptx: 'pptx', xlsx: 'xlsx' };
   const artifactPlaceholders = {
@@ -695,9 +695,219 @@
     }
   }
 
+  async function loadEvaluation() {
+    const [cases, runs] = await Promise.all([
+      api('/api/admin/evaluation/cases'),
+      api('/api/admin/evaluation/runs?limit=50'),
+    ]);
+    state.cases = cases.items || [];
+    state.evaluationMeta = cases;
+    state.runs = runs.items || [];
+    renderEvaluationCases();
+    renderEvaluationRuns();
+  }
+
+  function renderEvaluationCases() {
+    const thresholds = (state.evaluationMeta || {}).thresholds || {};
+    $('thresholdPill').textContent = thresholds.min_recall === undefined
+      ? '-'
+      : `recall ≥ ${thresholds.min_recall} · 引用 ≥ ${thresholds.min_citation_accuracy}`;
+    const body = $('caseRows');
+    body.replaceChildren();
+    $('caseCount').textContent = `${state.cases.length} 条`;
+    $('casesEmpty').hidden = state.cases.length > 0;
+    for (const item of state.cases) {
+      const row = document.createElement('tr');
+      const keyCell = document.createElement('td');
+      keyCell.textContent = item.case_key;
+      const questionCell = document.createElement('td');
+      questionCell.textContent = item.question;
+      const documentCell = document.createElement('td');
+      documentCell.textContent = item.expected_document_key || '-';
+      const headingCell = document.createElement('td');
+      headingCell.textContent = item.expected_heading || '-';
+      const typeCell = document.createElement('td');
+      typeCell.textContent = item.expect_refusal ? '应拒答' : '应命中';
+      const statusCell = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = `status status-${item.active ? 'indexed' : 'superseded'}`;
+      badge.textContent = item.active ? '启用' : '已停用';
+      statusCell.appendChild(badge);
+
+      const actionCell = document.createElement('td');
+      const actions = document.createElement('div');
+      actions.className = 'version-actions';
+      actions.append(versionAction('编辑', 'evaluation.run', () => openCaseDialog(item)));
+      if (item.active) {
+        actions.append(versionAction('停用', 'evaluation.run', () => deactivateCase(item)));
+      }
+      actionCell.appendChild(actions);
+
+      row.append(keyCell, questionCell, documentCell, headingCell, typeCell, statusCell, actionCell);
+      body.appendChild(row);
+    }
+  }
 
   function metricText(value) {
     return value === null || value === undefined ? '-' : Number(value).toFixed(3);
+  }
+
+  function renderEvaluationRuns() {
+    const body = $('runRows');
+    body.replaceChildren();
+    $('runCount').textContent = `${state.runs.length} 条`;
+    $('runsEmpty').hidden = state.runs.length > 0;
+    for (const item of state.runs) {
+      const row = document.createElement('tr');
+      const idCell = document.createElement('td');
+      idCell.textContent = `#${item.run_id}`;
+      const triggerCell = document.createElement('td');
+      triggerCell.textContent = item.trigger;
+      const gateCell = document.createElement('td');
+      gateCell.appendChild(statusBadge(item.gate_result || item.status));
+      const recallCell = document.createElement('td');
+      recallCell.textContent = metricText(item.recall_at_k);
+      const citationCell = document.createElement('td');
+      citationCell.textContent = metricText(item.citation_accuracy);
+      const refusalCell = document.createElement('td');
+      refusalCell.textContent = metricText(item.refusal_accuracy);
+      const passCell = document.createElement('td');
+      passCell.textContent = `${Number(item.passed_cases || 0)}/${Number(item.total_cases || 0)}`;
+      const timeCell = document.createElement('td');
+      timeCell.textContent = formatTime(item.finished_at || item.started_at);
+      const actionCell = document.createElement('td');
+      actionCell.appendChild(versionAction('明细', 'document.read', () => showRunDetail(item.run_id)));
+      row.append(idCell, triggerCell, gateCell, recallCell, citationCell, refusalCell, passCell, timeCell, actionCell);
+      body.appendChild(row);
+    }
+  }
+
+  async function showRunDetail(runId) {
+    try {
+      const payload = await api(`/api/admin/evaluation/runs/${runId}`);
+      const run = payload.run;
+      const container = $('runDetail');
+      container.replaceChildren();
+      const head = document.createElement('div');
+      head.className = 'section-title';
+      const title = document.createElement('h2');
+      title.textContent = `运行 #${run.run_id} · ${statusText[run.gate_result] || run.status}`;
+      head.appendChild(title);
+      const reason = document.createElement('p');
+      reason.className = 'reason-hint';
+      reason.textContent = run.gate_reason || '指标全部达标';
+      container.append(head, reason);
+      for (const item of run.results) {
+        const card = document.createElement('div');
+        card.className = 'chunk-item';
+        const label = document.createElement('strong');
+        let outcome = '未命中';
+        if (item.refusal_ok !== null && item.refusal_ok !== undefined) {
+          outcome = item.refusal_ok ? '正确拒答' : '未拒答';
+        } else if (item.citation_ok) {
+          outcome = `命中第 ${item.matched_rank} 位且章节一致`;
+        } else if (item.retrieved) {
+          outcome = '命中但章节不符';
+        }
+        label.textContent = `${item.case_key} · ${outcome} · ${item.latency_ms}ms`;
+        const body = document.createElement('pre');
+        body.textContent = item.question;
+        card.append(label, body);
+        container.appendChild(card);
+      }
+      if (!run.results.length) {
+        const empty = document.createElement('p');
+        empty.className = 'reason-hint';
+        empty.textContent = '该运行没有用例结果。';
+        container.appendChild(empty);
+      }
+      container.hidden = false;
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  function openCaseDialog(item = null) {
+    const form = $('caseForm');
+    form.reset();
+    $('caseDialogTitle').textContent = item ? `编辑用例 ${item.case_key}` : '新增用例';
+    if (item) {
+      form.elements.case_key.value = item.case_key;
+      form.elements.question.value = item.question;
+      form.elements.expect_refusal.checked = !!item.expect_refusal;
+      form.elements.expected_document_key.value = item.expected_document_key || '';
+      form.elements.expected_heading.value = item.expected_heading || '';
+      form.elements.tags.value = item.tags || '';
+      form.elements.active.checked = !!item.active;
+    }
+    $('caseDialog').showModal();
+  }
+
+  async function submitCase(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = {
+      case_key: form.elements.case_key.value.trim(),
+      question: form.elements.question.value.trim(),
+      expect_refusal: form.elements.expect_refusal.checked,
+      expected_document_key: form.elements.expected_document_key.value.trim(),
+      expected_heading: form.elements.expected_heading.value.trim(),
+      tags: form.elements.tags.value.trim(),
+      active: form.elements.active.checked,
+    };
+    try {
+      await api('/api/admin/evaluation/cases', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      toast(`用例 ${payload.case_key} 已保存`);
+      $('caseDialog').close();
+      await Promise.all([loadEvaluation(), loadAudit(true)]);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function deactivateCase(item) {
+    try {
+      await api('/api/admin/evaluation/cases', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          case_key: item.case_key,
+          question: item.question,
+          expect_refusal: item.expect_refusal,
+          expected_document_key: item.expected_document_key || '',
+          expected_heading: item.expected_heading || '',
+          tags: item.tags || '',
+          active: false,
+        }),
+      });
+      toast(`用例 ${item.case_key} 已停用`);
+      await loadEvaluation();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function runEvaluation() {
+    try {
+      const payload = await api('/api/admin/evaluation/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trigger: 'manual' }),
+      });
+      const run = payload.run;
+      toast(
+        `评测完成：${statusText[run.gate_result] || run.status}，通过 `
+        + `${run.passed_cases}/${run.total_cases}`,
+      );
+      await Promise.all([loadEvaluation(), loadAudit(true)]);
+      await showRunDetail(run.run_id);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
   }
 
   function reviewerPath(documentId, version, action) {
@@ -714,6 +924,14 @@
     const governanceVisible = can('document.review');
     $('governanceNav').hidden = !governanceVisible;
     $('jobsNav').hidden = !can('document.read');
+    $('evaluationNav').hidden = !can('document.read');
+    $('runEvaluation').hidden = !can('evaluation.run');
+    $('openCase').hidden = !can('evaluation.run');
+    const modeText = state.me?.governance_mode === 'review' ? '审批发布' : '直接发布';
+    $('governanceMode').textContent = modeText;
+    $('governanceModeInline').textContent = modeText;
+    const gateText = { off: '评测门已关闭', warn: '评测门：仅告警', block: '评测门：阻断发布' };
+    $('gateModePill').textContent = gateText[state.me?.evaluation_gate_mode] || '-';
     if (!governanceVisible && state.view === 'governance') setView('documents');
     if (!can('document.read') && ['jobs', 'evaluation'].includes(state.view)) setView('documents');
   }
@@ -909,6 +1127,7 @@
       toast(error.message, 'error');
     }
   }
+
   function overrideRequested() {
     return !!$('overrideReview')?.checked;
   }
@@ -1115,6 +1334,12 @@
     $('documentSearch').addEventListener('input', renderDocuments);
     $('scopeFilter').addEventListener('change', renderDocuments);
     $('auditFilter').addEventListener('change', renderAudit);
+    $('jobFilter').addEventListener('change', () => loadJobs().catch(error => toast(error.message, 'error')));
+    $('runEvaluation').addEventListener('click', runEvaluation);
+    $('openCase').addEventListener('click', () => openCaseDialog());
+    $('closeCase').addEventListener('click', () => $('caseDialog').close());
+    $('cancelCase').addEventListener('click', () => $('caseDialog').close());
+    $('caseForm').addEventListener('submit', submitCase);
     $('closeInspector').addEventListener('click', closeInspector);
     $('addAcl').addEventListener('click', () => addAclRow());
     $('aclForm').addEventListener('submit', saveAcl);

@@ -16,10 +16,10 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from backend import (
-    AppSettings, AuthenticationError, EmbeddingClient, OIDCAuthenticator, Principal,
-    DocumentSourceStore, ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase,
-    GovernanceError, HybridRetriever, build_embedding_client, configure_logging, log_event,
-    request_id_context,
+    AppSettings, AuthenticationError, EmbeddingClient, EvaluationError, EvaluationService,
+    GovernanceError, HybridRetriever, OIDCAuthenticator, Principal, DocumentSourceStore,
+    ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase, build_embedding_client,
+    configure_logging, log_event, request_id_context,
 )
 from ingestion import DocumentIngestionService
 from backend.artifacts import ARTIFACT_MEDIA_TYPES, ArtifactError, ArtifactService
@@ -77,6 +77,19 @@ class ReasonReq(BaseModel):
     reason: str = Field(min_length=1, max_length=512)
 
 
+class EvaluationCaseReq(BaseModel):
+    case_key: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=2000)
+    expect_refusal: bool = False
+    expected_document_key: str = Field(default="", max_length=512)
+    expected_heading: str = Field(default="", max_length=512)
+    tags: str = Field(default="", max_length=256)
+    active: bool = True
+
+
+class EvaluationRunReq(BaseModel):
+    trigger: Literal["manual", "pre_publish", "scheduled"] = "manual"
+    document_version_id: int | None = None
 
 
 def create_admin_app(settings: AppSettings | None = None,
@@ -126,6 +139,12 @@ def create_admin_app(settings: AppSettings | None = None,
     )
     sources = DocumentSourceStore(config.project_root / "data" / "sources")
     runtime = model_runtime or ModelRuntime(timeout_seconds=max(60.0, config.model_timeout_seconds))
+    evaluations = EvaluationService(
+        settings=config,
+        database=database,
+        retriever=HybridRetriever(database, embeddings, top_k=config.evaluation_top_k),
+        embeddings=embeddings,
+    )
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
@@ -147,6 +166,7 @@ def create_admin_app(settings: AppSettings | None = None,
     application.state.models = models
     application.state.sources = sources
     application.state.model_runtime = runtime
+    application.state.evaluations = evaluations
 
     @application.exception_handler(HTTPException)
     async def http_error(_request: Request, exc: HTTPException):
@@ -360,12 +380,18 @@ def create_admin_app(settings: AppSettings | None = None,
             "groups": sorted(principal.groups),
             "capabilities": sorted(principal.capabilities),
             "governance_mode": config.governance_mode,
+            "evaluation_gate_mode": config.evaluation_gate_mode,
             "ingestion_worker_enabled": config.ingestion_worker_enabled,
             "ingestion_engine": config.ingestion_engine,
             "governance_require_separation_of_duties":
                 config.governance_require_separation_of_duties,
             "governance_override_allowed": config.governance_allow_admin_override
             and principal.has_capability("governance.override"),
+            # Bypassing a blocking evaluation gate is its own policy: the switch, the publish
+            # capability and the override capability must all be present.
+            "evaluation_override_allowed": config.evaluation_allow_override
+            and principal.has_capability("governance.override")
+            and principal.has_capability("document.publish"),
         }
 
     @application.get("/api/admin/documents")
@@ -531,6 +557,43 @@ def create_admin_app(settings: AppSettings | None = None,
         # Bypassing the quality gate needs the publish capability AND the override capability, plus
         # its own configuration switch: being allowed to publish is not the same as being allowed
         # to ignore measurements, and that policy is independent of separation of duties.
+        gate_override = bool(
+            payload.override and config.evaluation_allow_override
+            and principal.has_capability("governance.override")
+            and principal.has_capability("document.publish")
+        )
+        gate = None
+        if config.evaluation_gate_mode != "off":
+            try:
+                version_pk = database.document_version_pk(document_id, version)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from None
+            try:
+                gate = await run_in_threadpool(
+                    evaluations.run,
+                    trigger="pre_publish",
+                    document_version_id=version_pk,
+                    actor_subject_id=principal.subject_id,
+                    request_id=request_id,
+                )
+            except EvaluationError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"评测执行失败：{exc.detail or exc.code}",
+                ) from None
+            if gate.get("gate_result") == "block" and not gate_override:
+                database.record_audit_event(
+                    actor_subject_id=principal.subject_id,
+                    action="document_publish",
+                    target_type="document",
+                    target_ref=f"{document_id}:v{version}",
+                    result="failed",
+                    request_id=request_id,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"评测门未通过，发布被阻断：{gate.get('gate_reason') or '指标不达标'}",
+                )
         try:
             state = database.publish_document_version(
                 document_id=document_id,
@@ -539,6 +602,11 @@ def create_admin_app(settings: AppSettings | None = None,
                 comment=payload.comment,
                 request_id=request_id,
                 allow_override=governance_override_allowed(principal, payload.override),
+                gate_override=bool(gate_override and gate and gate.get("gate_result") == "block"),
+                gate_comment=(
+                    f"评测门未通过仍发布：{gate.get('gate_reason') or ''}"
+                    if gate and gate.get("gate_result") == "block" else ""
+                ),
             )
         except GovernanceError as exc:
             raise governance_http_error(exc) from None
@@ -552,7 +620,7 @@ def create_admin_app(settings: AppSettings | None = None,
             result="success",
             request_id=request_id,
         )
-        return {"ok": True, "version": state}
+        return {"ok": True, "version": state, "evaluation": gate}
 
     @application.post("/api/admin/documents/{document_id}/versions/{version}/withdraw")
     async def withdraw_version(document_id: int, version: int, payload: ReasonReq,
@@ -663,6 +731,123 @@ def create_admin_app(settings: AppSettings | None = None,
             request_id=request_id_context.get(),
         )
         return {"ok": True, "job": job}
+
+    @application.get("/api/admin/evaluation/cases")
+    async def evaluation_cases(limit: int = Query(200, ge=1, le=500),
+                               _principal: Principal = Depends(
+                                   require_capability("document.read"))):
+        return {
+            "ok": True,
+            "items": database.list_evaluation_cases(limit=limit),
+            "gate_mode": config.evaluation_gate_mode,
+            "thresholds": {
+                "min_recall": config.evaluation_min_recall,
+                "min_citation_accuracy": config.evaluation_min_citation_accuracy,
+                "max_regression": config.evaluation_max_regression,
+                "top_k": config.evaluation_top_k,
+            },
+        }
+
+    @application.put("/api/admin/evaluation/cases")
+    async def save_evaluation_case(payload: EvaluationCaseReq,
+                                   principal: Principal = Depends(
+                                       require_capability("evaluation.run"))):
+        try:
+            case = database.upsert_evaluation_case(
+                case_key=payload.case_key,
+                question=payload.question,
+                expect_refusal=payload.expect_refusal,
+                expected_document_key=payload.expected_document_key or None,
+                expected_heading=payload.expected_heading or None,
+                tags=payload.tags,
+                active=payload.active,
+                actor_subject_id=principal.subject_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="evaluation_case_save",
+            target_type="evaluation_case",
+            target_ref=case["case_key"],
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True, "case": case}
+
+    @application.delete("/api/admin/evaluation/cases/{case_id}")
+    async def remove_evaluation_case(case_id: int,
+                                     principal: Principal = Depends(
+                                         require_capability("evaluation.run"))):
+        try:
+            database.delete_evaluation_case(case_id)
+        except GovernanceError as exc:
+            raise governance_http_error(exc) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="evaluation_case_delete",
+            target_type="evaluation_case",
+            target_ref=str(case_id),
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True}
+
+    @application.post("/api/admin/evaluation/runs")
+    async def create_evaluation_run(payload: EvaluationRunReq,
+                                    principal: Principal = Depends(
+                                        require_capability("evaluation.run"))):
+        request_id = request_id_context.get()
+        if (
+            payload.trigger == "pre_publish"
+            and payload.document_version_id is None
+        ):
+            raise HTTPException(status_code=400, detail="发布前评测必须指定文档版本")
+        try:
+            run = await run_in_threadpool(
+                evaluations.run,
+                trigger=payload.trigger,
+                document_version_id=payload.document_version_id,
+                actor_subject_id=principal.subject_id,
+                request_id=request_id,
+            )
+        except EvaluationError as exc:
+            raise HTTPException(
+                status_code=409, detail=f"评测执行失败：{exc.detail or exc.code}",
+            ) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="evaluation_run",
+            target_type="evaluation_run",
+            target_ref=str(run["run_id"]),
+            result="success",
+            request_id=request_id,
+        )
+        return {"ok": True, "run": run}
+
+    @application.get("/api/admin/evaluation/runs")
+    async def evaluation_runs(limit: int = Query(50, ge=1, le=200),
+                              document_version_id: int | None = Query(None),
+                              _principal: Principal = Depends(
+                                  require_capability("document.read"))):
+        return {
+            "ok": True,
+            "items": database.list_evaluation_runs(
+                limit=limit, document_version_id=document_version_id,
+            ),
+        }
+
+    @application.get("/api/admin/evaluation/runs/{run_id}")
+    async def evaluation_run_detail(run_id: int,
+                                    _principal: Principal = Depends(
+                                        require_capability("document.read"))):
+        try:
+            detail = database.evaluation_run_detail(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        return {"ok": True, "run": detail}
 
     @application.get("/api/admin/audit-events")
     async def audit_events(limit: int = 100,

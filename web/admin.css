@@ -50,3 +50,14 @@ dialog.wide{width:min(780px,calc(100vw - 28px))}
 .job-metrics{margin-bottom:14px}
 .jobs .reason-hint{margin:0 0 12px}
 
+/* Evaluation gate (20260921-3) */
+.status-pass{background:#e8f3ee;color:#25674f}
+.status-pass::before{background:#2c8b67}
+.status-warn{background:var(--amber-soft);color:var(--amber)}
+.status-warn::before{background:#d68722}
+.status-block{background:var(--red-soft);color:var(--red)}
+.status-block::before{background:var(--red)}
+.status-overridden{background:#fdeeee;color:#8a4b4b}
+.status-overridden::before{background:#b06a6a}
+.run-detail{margin-top:14px;border:1px solid var(--line);border-radius:7px;background:var(--surface);padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.run-detail .section-title{margin-bottom:0}

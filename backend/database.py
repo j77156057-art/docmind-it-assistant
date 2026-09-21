@@ -19,8 +19,8 @@ from sqlalchemy.pool import NullPool
 from .db_models import (
     ACTIVE_JOB_STATUSES, IN_FLIGHT_STATUSES, JOB_STATUSES, AuditEventRecord, Base,
     DocumentAclRecord, DocumentChunkRecord, DocumentRecord, DocumentVersionRecord,
-    DocumentVersionReviewRecord,
-    IngestionJobRecord, ModelUsageRecord, QueryRecord,
+    DocumentVersionReviewRecord, EvaluationCaseRecord, EvaluationCaseResultRecord,
+    EvaluationRunRecord, IngestionJobRecord, ModelUsageRecord, QueryRecord,
     RuntimeModelConfigRecord, RuntimeProviderCredentialRecord,
 )
 from cryptography.fernet import Fernet, InvalidToken
@@ -95,6 +95,9 @@ class QueryDatabase:
                 DocumentChunkRecord.__tablename__, DocumentAclRecord.__tablename__,
                 DocumentVersionReviewRecord.__tablename__,
                 IngestionJobRecord.__tablename__,
+                EvaluationCaseRecord.__tablename__,
+                EvaluationRunRecord.__tablename__,
+                EvaluationCaseResultRecord.__tablename__,
                 AuditEventRecord.__tablename__, RuntimeModelConfigRecord.__tablename__,
                 RuntimeProviderCredentialRecord.__tablename__,
             }
@@ -985,6 +988,14 @@ class QueryDatabase:
                 raise GovernanceError("review_approval_required", "发布前必须先通过审核")
             is_override = not approvals
             now = datetime.now(timezone.utc)
+            if gate_override:
+                # Recorded before the publish record so the trail reads: bypass, then publish.
+                session.add(self._new_review(
+                    version_id=row.id, action="override_gate", from_status="staged",
+                    to_status="staged", actor_subject_id=actor_subject_id,
+                    comment=(gate_comment or "").strip(), is_override=True,
+                    request_id=request_id,
+                ))
             for other in session.scalars(select(DocumentVersionRecord).where(
                 DocumentVersionRecord.document_id == row.document_id,
                 DocumentVersionRecord.id != row.id,
@@ -1058,9 +1069,241 @@ class QueryDatabase:
             session.flush()
             return self._version_public(target)
 
+    # -- evaluation gate ------------------------------------------------------
+    @staticmethod
+    def _case_public(row: EvaluationCaseRecord) -> dict:
+        return {
+            "case_id": row.id,
+            "case_key": row.case_key,
+            "question": row.question,
+            "expect_refusal": bool(row.expect_refusal),
+            "expected_document_key": row.expected_document_key,
+            "expected_heading": row.expected_heading,
+            "tags": row.tags,
+            "active": bool(row.active),
+            "created_by_subject_id": row.created_by_subject_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    @staticmethod
+    def _run_public(row: EvaluationRunRecord) -> dict:
         def ratio(value):
             return float(value) if value is not None else None
 
+        return {
+            "run_id": row.id,
+            "trigger": row.trigger,
+            "status": row.status,
+            "document_version_id": row.document_version_id,
+            "gate_mode": row.gate_mode,
+            "gate_result": row.gate_result,
+            "gate_reason": row.gate_reason,
+            "total_cases": row.total_cases,
+            "passed_cases": row.passed_cases,
+            "failed_cases": row.failed_cases,
+            "recall_at_k": ratio(row.recall_at_k),
+            "citation_accuracy": ratio(row.citation_accuracy),
+            "refusal_accuracy": ratio(row.refusal_accuracy),
+            "baseline_run_id": row.baseline_run_id,
+            "created_by_subject_id": row.created_by_subject_id,
+            "request_id": row.request_id,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "error_code": row.error_code,
+        }
+
+    def list_evaluation_cases(self, *, active_only: bool = False,
+                              limit: int = 200) -> list[dict]:
+        statement = select(EvaluationCaseRecord)
+        if active_only:
+            statement = statement.where(EvaluationCaseRecord.active.is_(True))
+        statement = statement.order_by(EvaluationCaseRecord.case_key).limit(
+            max(1, min(int(limit), 500)),
+        )
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._case_public(row) for row in rows]
+
+    def upsert_evaluation_case(self, *, case_key: str, question: str, expect_refusal: bool = False,
+                               expected_document_key: str | None = None,
+                               expected_heading: str | None = None, tags: str = "",
+                               active: bool = True, actor_subject_id: str = "") -> dict:
+        key = (case_key or "").strip()[:64]
+        text = (question or "").strip()
+        if not key or not text:
+            raise ValueError("评测用例必须包含 case_key 与 question")
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            row = session.scalar(select(EvaluationCaseRecord).where(
+                EvaluationCaseRecord.case_key == key,
+            ))
+            if row is None:
+                row = EvaluationCaseRecord(
+                    case_key=key, question=text, expect_refusal=bool(expect_refusal),
+                    expected_document_key=(expected_document_key or None),
+                    expected_heading=(expected_heading or None),
+                    tags=(tags or "")[:256], active=bool(active),
+                    created_by_subject_id=(actor_subject_id or "")[:64] or None,
+                    created_at=now, updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.question = text
+                row.expect_refusal = bool(expect_refusal)
+                row.expected_document_key = expected_document_key or None
+                row.expected_heading = expected_heading or None
+                row.tags = (tags or "")[:256]
+                row.active = bool(active)
+                row.updated_at = now
+            session.flush()
+            return self._case_public(row)
+
+    def delete_evaluation_case(self, case_id: int) -> None:
+        with self._sessions.begin() as session:
+            row = session.get(EvaluationCaseRecord, int(case_id))
+            if row is None:
+                raise ValueError("评测用例不存在")
+            referenced = session.scalar(
+                select(func.count()).select_from(EvaluationCaseResultRecord).where(
+                    EvaluationCaseResultRecord.case_id == row.id,
+                )
+            ) or 0
+            if referenced:
+                # History is evidence: deactivate instead of deleting a case that was measured.
+                raise GovernanceError(
+                    "evaluation_case_in_use", "该用例已有历史结果，请改为停用而不是删除",
+                )
+            session.delete(row)
+
+    def create_evaluation_run(self, *, trigger: str, gate_mode: str,
+                              document_version_id: int | None = None,
+                              actor_subject_id: str = "", request_id: str = "") -> dict:
+        if trigger not in {"manual", "pre_publish", "scheduled"}:
+            raise ValueError("评测触发方式无效")
+        if gate_mode not in {"off", "warn", "block"}:
+            raise ValueError("评测门模式无效")
+        with self._sessions.begin() as session:
+            row = EvaluationRunRecord(
+                trigger=trigger, status="running", gate_mode=gate_mode,
+                document_version_id=(
+                    int(document_version_id) if document_version_id is not None else None
+                ),
+                gate_reason="", created_by_subject_id=(actor_subject_id or "")[:64] or None,
+                request_id=(request_id or "")[:128],
+                started_at=datetime.now(timezone.utc),
+            )
+            session.add(row)
+            session.flush()
+            return self._run_public(row)
+
+    def complete_evaluation_run(self, run_id: int, *, metrics: dict, results: list[dict],
+                                gate_result: str | None, gate_reason: str = "",
+                                baseline_run_id: int | None = None) -> dict:
+        if gate_result is not None and gate_result not in {
+            "pass", "warn", "block", "overridden",
+        }:
+            raise ValueError("评测门结论无效")
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            row = session.get(EvaluationRunRecord, int(run_id))
+            if row is None:
+                raise ValueError("评测运行不存在")
+            row.status = "succeeded"
+            row.finished_at = now
+            row.total_cases = int(metrics.get("total_cases") or 0)
+            row.passed_cases = int(metrics.get("passed_cases") or 0)
+            row.failed_cases = int(metrics.get("failed_cases") or 0)
+            row.recall_at_k = metrics.get("recall_at_k")
+            row.citation_accuracy = metrics.get("citation_accuracy")
+            row.refusal_accuracy = metrics.get("refusal_accuracy")
+            row.gate_result = gate_result
+            row.gate_reason = (gate_reason or "")[:512]
+            row.baseline_run_id = int(baseline_run_id) if baseline_run_id else None
+            session.add_all([
+                EvaluationCaseResultRecord(
+                    run_id=row.id,
+                    case_id=int(item["case_id"]),
+                    retrieved=bool(item.get("retrieved")),
+                    matched_rank=item.get("matched_rank"),
+                    citation_ok=item.get("citation_ok"),
+                    refusal_ok=item.get("refusal_ok"),
+                    latency_ms=int(item.get("latency_ms") or 0),
+                    detail=dict(item.get("detail") or {}),
+                )
+                for item in results
+            ])
+            session.flush()
+            return self._run_public(row)
+
+    def fail_evaluation_run(self, run_id: int, error_code: str) -> dict:
+        with self._sessions.begin() as session:
+            row = session.get(EvaluationRunRecord, int(run_id))
+            if row is None:
+                raise ValueError("评测运行不存在")
+            row.status = "failed"
+            row.error_code = (error_code or "evaluation_failed")[:64]
+            row.finished_at = datetime.now(timezone.utc)
+            session.flush()
+            return self._run_public(row)
+
+    def list_evaluation_runs(self, *, limit: int = 50,
+                             document_version_id: int | None = None) -> list[dict]:
+        statement = select(EvaluationRunRecord)
+        if document_version_id is not None:
+            statement = statement.where(
+                EvaluationRunRecord.document_version_id == int(document_version_id),
+            )
+        statement = statement.order_by(EvaluationRunRecord.id.desc()).limit(
+            max(1, min(int(limit), 200)),
+        )
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._run_public(row) for row in rows]
+
+    def evaluation_run_detail(self, run_id: int) -> dict:
+        with self._sessions() as session:
+            row = session.get(EvaluationRunRecord, int(run_id))
+            if row is None:
+                raise ValueError("评测运行不存在")
+            results = session.execute(
+                select(EvaluationCaseResultRecord, EvaluationCaseRecord)
+                .join(EvaluationCaseRecord, EvaluationCaseRecord.id == EvaluationCaseResultRecord.case_id)
+                .where(EvaluationCaseResultRecord.run_id == row.id)
+                .order_by(EvaluationCaseResultRecord.id)
+            ).all()
+        return {
+            **self._run_public(row),
+            "results": [{
+                "case_key": case.case_key,
+                "question": case.question,
+                "expect_refusal": bool(case.expect_refusal),
+                "expected_document_key": case.expected_document_key,
+                "retrieved": bool(result.retrieved),
+                "matched_rank": result.matched_rank,
+                "citation_ok": result.citation_ok,
+                "refusal_ok": result.refusal_ok,
+                "latency_ms": result.latency_ms,
+                "detail": dict(result.detail or {}),
+            } for result, case in results],
+        }
+
+    def latest_evaluation_run(self, *, document_version_id: int | None = None,
+                              trigger: str | None = None,
+                              succeeded_only: bool = True) -> dict | None:
+        statement = select(EvaluationRunRecord)
+        if document_version_id is not None:
+            statement = statement.where(
+                EvaluationRunRecord.document_version_id == int(document_version_id),
+            )
+        if trigger:
+            statement = statement.where(EvaluationRunRecord.trigger == trigger)
+        if succeeded_only:
+            statement = statement.where(EvaluationRunRecord.status == "succeeded")
+        statement = statement.order_by(EvaluationRunRecord.id.desc()).limit(1)
+        with self._sessions() as session:
+            row = session.scalar(statement)
+        return self._run_public(row) if row is not None else None
 
     def list_documents(self) -> list[dict]:
         statement = (
