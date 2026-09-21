@@ -1,5 +1,8 @@
 services:
   postgres:
+    # pgvector, not plain postgres: migration 0003 runs `CREATE EXTENSION IF NOT EXISTS vector`
+    # and the vector column plus its HNSW index depend on it. Swapping this image for `postgres`
+    # makes `alembic upgrade head` fail on the first run. See README "PostgreSQL 必须安装 pgvector".
     image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:

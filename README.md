@@ -310,6 +310,26 @@ IT_CLOUD_MODEL=qwen-plus
 
 迁移可升级、可降级；涉及数据删除的降级必须先备份。细节见 [migrations/README.md](migrations/README.md)。
 
+### PostgreSQL 必须安装 pgvector
+
+迁移 `20260920_0003_documents_hybrid_search` 在 PostgreSQL 上执行 `CREATE EXTENSION IF NOT EXISTS vector`（SQLite 路径不执行），向量列与 HNSW 余弦索引都依赖它。数据库服务端**没有** pgvector 时，`alembic upgrade head` 会在这一步直接失败：
+
+```
+sqlalchemy.exc.NotSupportedError: (psycopg.errors.FeatureNotSupported) extension "vector" is not available
+DETAIL:  Could not open extension control file "/usr/share/postgresql/16/extension/vector.control": No such file or directory
+```
+
+两条安装路径，选一条即可：
+
+| 部署方式 | 做法 |
+|---|---|
+| 容器 | 用官方镜像 `pgvector/pgvector:pg16` 或 `:pg17` 代替 `postgres`（本仓库 `compose.yaml` 用的是 `pgvector/pgvector:pg17`）。**不要**把镜像换回裸 `postgres`。 |
+| 自建实例 | 先装发行版扩展包：Debian/Ubuntu `postgresql-16-pgvector`，RHEL 系 `pgvector_16`，或从源码编译。然后在目标库执行 `CREATE EXTENSION vector`。 |
+
+`CREATE EXTENSION` 需要相应权限，而应用角色通常不是超级用户，**建议由 DBA 预先在目标库建好扩展**，再让应用跑迁移。
+
+> 注意区分：Python 包 `pgvector.sqlalchemy`（已随 `requirements.txt` 安装，让 SQLAlchemy 能表达向量类型）与服务端扩展是两件不同的事——只有后者提供 `vector` 类型、距离运算与 HNSW 索引。
+
 ## 测试与安全检查
 
 ```powershell

@@ -92,7 +92,7 @@ PostgreSQL 使用 `tsvector`/GIN 全文索引和 pgvector/HNSW 余弦索引，�
 
 ## 发布与恢复
 
-升级前备份 PostgreSQL，并确认数据库允许 `CREATE EXTENSION vector`，或由 DBA 预先安装扩展。迁移后执行：
+升级前备份 PostgreSQL，并确认服务端已安装 pgvector 扩展、数据库允许 `CREATE EXTENSION vector`，或由 DBA 预先安装扩展。服务端缺扩展时迁移 0003 会以 `extension "vector" is not available` 直接失败——安装方式见 [README「PostgreSQL 必须安装 pgvector」](../README.md#postgresql-必须安装-pgvector)。迁移后执行：
 
 ```powershell
 .venv\Scripts\python -m alembic current
