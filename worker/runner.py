@@ -14,6 +14,8 @@ import time
 from backend import DocumentSourceStore, log_event, request_id_context
 from ingestion import DocumentProcessingError
 
+from .graph import StagingUnavailable
+
 LOGGER = logging.getLogger("docmind.it.worker")
 
 
@@ -29,7 +31,7 @@ class IngestionWorker:
     """
 
     def __init__(self, *, settings, database, ingestion, sources: DocumentSourceStore,
-                 worker_id: str = ""):
+                 worker_id: str = "", engine: str = "", graph_runner=None):
         self.settings = settings
         self.database = database
         self.ingestion = ingestion
@@ -37,6 +39,22 @@ class IngestionWorker:
         self.worker_id = (
             worker_id or settings.ingestion_worker_id or default_worker_id()
         )[:64]
+        self.engine = (engine or settings.ingestion_engine or "simple").strip().lower()
+        self._graph_runner = graph_runner
+
+    def _runner(self):
+        """Lazily build the graph runner so the core deployment never imports the framework."""
+        if self._graph_runner is None:
+            from .graph import IndexingGraphRunner  # noqa: PLC0415 - deliberate lazy import
+
+            self._graph_runner = IndexingGraphRunner(
+                settings=self.settings, database=self.database, ingestion=self.ingestion,
+            )
+        return self._graph_runner
+
+    def close(self) -> None:
+        if self._graph_runner is not None:
+            self._graph_runner.close()
 
     @property
     def publish_on_success(self) -> bool:
@@ -120,16 +138,30 @@ class IngestionWorker:
             if source_path is None:
                 raise DocumentProcessingError("source_missing", retryable=False)
             self.database.heartbeat_ingestion_job(job_id, self.worker_id)
-            result = self.ingestion.process_version(
-                document_id=reference["document_id"],
-                version_id=version_id,
-                source_path=source_path,
-                publish=self.publish_on_success,
-                actor_subject_id=job.get("created_by_subject_id") or "",
-                request_id=request_id,
-            )
+            if self.engine == "langgraph":
+                # Checkpointed orchestration: a resumed run skips batches it already embedded.
+                result = self._runner().run(
+                    job=job,
+                    document_id=reference["document_id"],
+                    version_id=version_id,
+                    source_path=source_path,
+                )
+            else:
+                result = self.ingestion.process_version(
+                    document_id=reference["document_id"],
+                    version_id=version_id,
+                    source_path=source_path,
+                    publish=self.publish_on_success,
+                    actor_subject_id=job.get("created_by_subject_id") or "",
+                    request_id=request_id,
+                )
         except DocumentProcessingError as exc:
             return self._record_failure(job, exc.code, retryable=exc.retryable, detail=exc.detail)
+        except StagingUnavailable as exc:
+            # The checkpoint survived but its staged payload did not; restarting is deterministic.
+            return self._record_failure(
+                job, "staging_missing", retryable=True, detail=type(exc).__name__,
+            )
         except ValueError as exc:
             return self._record_failure(
                 job, "job_target_missing", retryable=False, detail=str(exc),

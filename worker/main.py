@@ -51,18 +51,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-jobs", type=int, default=0, help="最多处理多少个任务（0 表示不限）")
     parser.add_argument("--poll-seconds", type=float, default=None, help="空闲轮询间隔秒数")
     parser.add_argument("--worker-id", default="", help="Worker 标识，默认取主机名与进程号")
+    parser.add_argument(
+        "--engine", choices=("simple", "langgraph"), default="",
+        help="索引编排引擎，默认取 IT_INGESTION_ENGINE",
+    )
     args = parser.parse_args(argv)
+
     settings = AppSettings.from_environment()
     configure_logging(settings)
     worker, database = build_worker(settings)
     if args.worker_id:
         worker.worker_id = args.worker_id[:64]
+    if args.engine:
+        worker.engine = args.engine
     try:
         database.initialize()
         worker.sources.initialize()
         log_event(
             LOGGER, logging.INFO, "ingestion_worker_started",
             worker_id=worker.worker_id,
+            engine=worker.engine,
             publish_on_success=worker.publish_on_success,
             poll_seconds=args.poll_seconds or settings.ingestion_poll_seconds,
             max_attempts=settings.ingestion_max_attempts,
@@ -76,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         log_event(LOGGER, logging.INFO, "ingestion_worker_stopped", processed=processed)
         return 0
     finally:
+        worker.close()
         database.dispose()
 
 

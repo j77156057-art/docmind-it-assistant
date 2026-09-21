@@ -20,15 +20,23 @@
 - 元数据 Trace、质量评测和回归门；
 - 安全 Markdown 展示和通用视觉规范。
 - 管理服务中的结构化 DOCX、PDF、PPTX、XLSX 渲染；必须固定输出目录、禁止任意脚本和进程执行。
+- 在**非查询进程**（`ingestion/`、`worker/`）中使用 LangGraph 进行导入任务编排，
+  并使用 LangSmith 进行**脱敏后**的任务追踪；查询进程不得加载上述框架。
 
 迁移代码必须删除开发项目依赖，并在 IT 项目中拥有自己的测试、配置和版本历史。
 
 ### 2.1 编排框架的准入条件（批次 3 起生效）
 
+LangGraph / LangSmith 属于"允许但受限"的依赖，必须同时满足：
+
 1. **只出现在非查询进程**：`worker/` 与 `ingestion/` 可以导入；`app.py`、`assistant/`、`backend/`
    不得出现在其 import 闭包内（由 §5 的闭包测试证明，而不是靠人工评审）。
 2. **业务状态仍归本项目所有**：任务可见性、重试与审计读的是 `ingestion_jobs` 与
    `document_versions`；框架 checkpoint 只保存续跑所需的内部状态，任何服务都不得读取它。
+3. **checkpoint 不得写入应用 schema**：写入会让 `alembic check` 报出未知表并使迁移历史失真。
+   默认使用独立 SQLite 文件（`IT_INGESTION_CHECKPOINT_PATH`），PostgreSQL 下使用独立 schema。
+4. **依赖隔离**：LangGraph 及其 32 个传递依赖位于 `requirements-worker.txt`，
+   查询与管理部署只安装 `requirements.txt`（依赖集合零变化）。
 5. **LangSmith 默认关闭**：代码不得设置 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING` 等环境变量；
    启用只能是运维的显式动作，且必须先完成脱敏评审（禁止上报正文、问题、回答与密钥）。
 
@@ -43,6 +51,7 @@
 | 游戏和引擎 | `game_workbench`、`engine_adapters` | 属于开发工作台 |
 | Python 热加载 | 可执行 Hook / Skill 脚本 | 等同于服务端任意代码执行 |
 | 任意联网工具 | Web 抓取、无白名单 HTTP | 可能泄露企业查询与知识内容 |
+| 编排与追踪框架进入查询进程 | `langgraph`、`langchain_core`、`langsmith` | 查询进程只做检索，引入编排框架会扩大行为权限与攻击面，并让查询进程获得出站 Trace 能力 |
 
 ## 4. 运行隔离
 
@@ -61,7 +70,11 @@
 
 `tests/test_isolation_boundary.py` 以两种机制守卫边界：
 
-- 调用 `os.system`、`os.popen`、`subprocess.run` 或 `subprocess.Popen`。
+**（1）导入闭包检查（主守卫）**：从 `app.py` 出发递归解析 import，只要闭包内出现
+`langgraph`、`langgraph_sdk`、`langchain_core`、`langchain_protocol` 或 `langsmith` 即失败，
+并打印命中的文件路径与完整闭包。这比"按文件名黑名单"更强：无论导入写在哪个文件、
+是否被中间模块包装，都能被捕获。
+
 **（2）名单与文本检查（补充）**：
 
 - 拒绝导入开发 Agent、工作台、游戏或进程执行模块，扫描范围已扩展至 `ingestion/` 与 `worker/`；

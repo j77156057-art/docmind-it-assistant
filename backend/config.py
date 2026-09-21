@@ -114,6 +114,8 @@ class AppSettings(BaseModel):
     governance_require_separation_of_duties: bool = True
     governance_allow_admin_override: bool = False
     ingestion_worker_enabled: bool = False
+    ingestion_engine: Literal["simple", "langgraph"] = "simple"
+    ingestion_checkpoint_path: Path = PROJECT_ROOT / "data" / "worker-checkpoints.db"
     ingestion_worker_id: str = ""
     ingestion_poll_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
     ingestion_max_attempts: int = Field(default=3, ge=1, le=10)
@@ -278,6 +280,10 @@ class AppSettings(BaseModel):
                 read("IT_GOVERNANCE_ALLOW_ADMIN_OVERRIDE", "false"),
             ),
             ingestion_worker_enabled=_bool(read("IT_INGESTION_WORKER_ENABLED", "false")),
+            ingestion_engine=read("IT_INGESTION_ENGINE", "simple").strip().lower(),
+            ingestion_checkpoint_path=path_value(
+                "IT_INGESTION_CHECKPOINT_PATH", Path("data/worker-checkpoints.db"),
+            ),
             ingestion_worker_id=read("IT_INGESTION_WORKER_ID", "").strip(),
             ingestion_poll_seconds=float(read("IT_INGESTION_POLL_SECONDS", "2")),
             ingestion_max_attempts=int(read("IT_INGESTION_MAX_ATTEMPTS", "3")),
@@ -333,6 +339,7 @@ class AppSettings(BaseModel):
             "governance_require_separation_of_duties": self.governance_require_separation_of_duties,
             "governance_allow_admin_override": self.governance_allow_admin_override,
             "ingestion_worker_enabled": self.ingestion_worker_enabled,
+            "ingestion_engine": self.ingestion_engine,
             "ingestion_poll_seconds": self.ingestion_poll_seconds,
             "ingestion_max_attempts": self.ingestion_max_attempts,
             "ingestion_job_timeout_seconds": self.ingestion_job_timeout_seconds,

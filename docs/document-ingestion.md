@@ -49,6 +49,17 @@ CLI 导入同样尊重 `IT_GOVERNANCE_MODE`：`review` 模式下命令执行完�
 
 `IT_INGESTION_WORKER_ENABLED=true` 时，管理端导入接口只做校验、落盘和入队，随后立即返回 `202` 与 `job_id`；解析、分块、向量化由独立 Worker 完成：
 
+```powershell
+.venv\Scripts\python -m worker                # 常驻轮询
+.venv\Scripts\python -m worker --once         # 处理完当前队列后退出（cron / 部署钩子）
+.venv\Scripts\python -m worker --max-jobs 20  # 限制单次处理数量
+.venv\Scripts\python -m worker --engine langgraph   # 断点续跑引擎（需装 requirements-worker.txt）
+```
+
+索引引擎：`IT_INGESTION_ENGINE=simple`（默认，纯顺序执行）或 `langgraph`（分批向量化 + checkpoint）。
+选择 `langgraph` 时 Worker 在每批向量化后落检查点，进程被杀后只补做剩余批次；checkpoint 写在
+`IT_INGESTION_CHECKPOINT_PATH`（默认独立 SQLite 文件）或独立 PostgreSQL schema，不进入应用 schema。
+
 运维要点：
 
 | 现象 | 位置 | 处理 |

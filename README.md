@@ -26,6 +26,7 @@
 - **结构化产物**：管理端生成并验证 DOCX、PDF、PPTX、XLSX，不执行任意脚本。
 - **知识治理**：导入不再等于发布，版本有状态机、审批职责分离、作废与回滚，全程留痕。
 - **异步索引**：导入可排队（返回 `202` + 任务号），Worker 抢占执行、心跳保活、失败按可重试性分类重试。
+- **断点续跑编排**：可选的 LangGraph 引擎按批次 checkpoint，Worker 中途被杀不会重复为已完成的向量化付费。
 - **发布前评测门**：黄金题集复用生产检索路径量化 recall@k、引用命中率与拒答正确率，`block` 模式可阻断未达标发布，越权放行必须留痕。
 - **隐私日志**：日志不记录问题正文、回答正文、查询参数、会话 ID、客户端地址或密钥。
 
@@ -197,11 +198,33 @@ IT_INGESTION_HEARTBEAT_SECONDS=30
 
 ### 断点续跑引擎（可选）
 
+默认引擎 `simple` 是纯 Python 顺序执行，不需要框架依赖。切换到 `langgraph` 后，解析→分批向量化→落库→定稿被编排成带 checkpoint 的图，**每批向量化后都会落检查点**，因此 Worker 在批次中途被杀时，恢复运行只处理剩余批次：
+
+```powershell
+python -m pip install -r requirements.txt -r requirements-worker.txt
+.venv\Scripts\python -m worker --engine langgraph
+```
+
+```dotenv
+IT_INGESTION_ENGINE=langgraph
+IT_INGESTION_CHECKPOINT_PATH=data/worker-checkpoints.db
+```
+
 工程约束（由 `docs/isolation-boundary.md` §2.1 与自动测试共同保证）：
 
+- **只进 Worker**：查询进程的 import 闭包内不得出现 `langgraph`/`langchain_core`/`langsmith`，由 `tests/test_isolation_boundary.py` 从 `app.py` 出发递归验证（我实测过：在 `backend/` 里插一行 `import langgraph` 会让测试立刻变红并打印命中路径）。
+- **依赖可选**：LangGraph 及其 32 个传递依赖在 `requirements-worker.txt` / `requirements-worker-lock.txt`；查询与管理部署仍只装 39 个包的 `requirements.txt`，核心依赖集合**零变化**。
 - **业务状态仍归本项目**：任务可见性、重试与审计读 `ingestion_jobs` 与 `document_versions`；框架 checkpoint 只存续跑所需的内部状态，任何服务都不读它。
 - **checkpoint 不写应用 schema**：默认独立 SQLite 文件；PostgreSQL 下写入独立 schema。否则 `alembic check` 会报出未知表、迁移历史失真——`tests/test_indexing_graph.py` 里有一条测试专门跑完图之后验证 `alembic check` 仍然干净。
 - **LangSmith 默认关闭**：代码不设置任何 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING`（有测试禁止），启用只能是运维的显式动作，且需先完成脱敏评审。
+
+容器镜像：仓库自带的 `Dockerfile` 只安装 `requirements.txt`，因此镜像里可以直接跑
+`python -m worker --engine simple`；要用 `langgraph` 引擎需要在该镜像上补装 Worker 附加依赖：
+
+```dockerfile
+COPY requirements-worker.txt ./
+RUN python -m pip install --no-cache-dir -r requirements-worker.txt
+```
 
 ## 评测门与黄金题
 
@@ -252,13 +275,16 @@ node --check web/admin.js
 .venv\Scripts\python -m pip check
 ```
 
-测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、上传边界、路径约束、迁移升降级、混合检索、模型重试、费用账本和日志隐私。GitHub Actions 还会执行锁定依赖漏洞扫描。
+测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、上传边界、路径约束、迁移升降级、混合检索、模型重试、费用账本、日志隐私、知识治理的状态机与召回隔离、索引队列的抢占/心跳回收/重试分类/202 异步导入、导入闭包边界与 LangGraph checkpoint 断点续跑，以及评测门的指标计算、生产检索路径复用、`block` 阻断、越权留痕与基线回归。GitHub Actions 还会执行锁定依赖漏洞扫描（核心与 Worker 两份锁文件）。
 
 安全问题请参阅 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中提交密钥或企业数据。
 
 ## 当前限制
 
-- 管理端文档导入仍是同步请求，尚未拆成异步 Worker。
+- 异步 Worker 目前只实现 `import` 任务类型：`reindex` / `withdraw` / `evaluate` 会在任务表里显式失败（`job_type_unsupported`），不会静默跳过。
+- 可重试失败的重排没有持久化退避时间（`next_attempt_at`）；当前退避只在 Worker 进程内生效。
+- LangGraph 的 PostgreSQL checkpoint 路径（独立 schema + `PostgresSaver`）已实现但**在本仓库未做集成测试**（CI 无 PostgreSQL 服务）；SQLite 路径有完整测试覆盖。
+- 发布前评测在发布请求内**同步整跑**黄金题：题集很大时发布会变慢，`evaluate` 任务类型虽已声明但尚未实现异步评测。
 - 办公产物保存在本地目录，尚未接入对象存储、保留策略和审批发布。
 - Web 前端尚未实现 OIDC Authorization Code + PKCE 登录，当前生产入口面向 Bearer Token 客户端或身份网关。
 - 尚无检索重排（后续批次）。

@@ -179,5 +179,6 @@ class HealthAndLoggingTests(unittest.TestCase):
         for leaked in ("question", "detail", "answer", "password-is-secret", "document body"):
             self.assertNotIn(leaked, json.dumps(payload))
 
+
 if __name__ == "__main__":
     unittest.main()

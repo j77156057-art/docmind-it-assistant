@@ -14,12 +14,24 @@
 - 模型重试、Token/费用账本、动态模型路由和密钥脱敏。
 - 知识治理：版本状态机（`queued/processing/staged/indexed/rejected/withdrawn/superseded/failed`）、能力制治理角色、审批发布与职责分离、作废与回滚、审核预览与 `document_version_reviews` 留痕。
 - 异步索引：`ingestion_jobs` 业务队列、`worker` 进程（抢占、心跳、僵尸回收、可重试性分类）、导入接口 `202 + job_id`、任务重试/取消、队列健康诊断。
+- 可选 LangGraph 编排引擎：分批向量化 + checkpoint 断点续跑、独立 checkpoint 存储（不污染应用 schema）、从 `app.py` 出发的 import 闭包边界守卫。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 
 ## 安全边界
 
 - 查询服务不注册上传、ACL 写入、办公产物生成或命令执行路由。
+- 只有 `indexed` 版本参与召回；`staged`、`rejected`、`withdrawn` 的分块已入库但任何召回路径都取不到。
+- 导入不能修改已存在文档的访问范围，范围调整只能通过需要 `acl.write` 且写审计的 ACL 接口。
+- 治理角色不进入 ACL 解析，授予审核或发布角色不会扩大文档可见范围。
+- `admin` 不自动获得审核与发布能力；越权必须由配置开关加显式请求共同触发，并记录 `is_override`。
+- 索引任务表只保存业务元数据（版本、发起人、请求号、错误码），不写入文档正文。
+- 查询进程既不注册导入接口也不启动 Worker；Worker 使用独立的 `python -m worker` 入口。
+- 查询进程的 import 闭包内不得出现 `langgraph`、`langchain_core` 或 `langsmith`；该规则由自动测试从 `app.py` 递归验证，而非人工评审。
+- LangGraph 及其 32 个传递依赖只存在于 `requirements-worker.txt`；查询与管理部署的依赖集合保持不变。
+- 编排框架的 checkpoint 不写入应用 schema（独立 SQLite 文件或独立 PostgreSQL schema），避免 `alembic check` 失真。
+- 代码不设置 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING`；LangSmith 默认关闭，启用需先做脱敏评审。
+- 评测用例与逐题结果只保存问题、计数与排名，不保存模型回答或知识正文。
 - `development` 认证只允许配置为回环地址；生产配置强制 OIDC。
 - API Key 只从进程环境或未提交的 `.env` 读取。
 - 日志和审计不保存问题正文、回答正文、Token 原文或供应商错误正文。
@@ -45,6 +57,7 @@ node --check web/admin.js
 
 1. 将同步导入改为异步 Worker，并增加审批发布流程。
 1. 补充 `reindex` / `withdraw` / `evaluate` 任务类型（含异步评测），并为可重试失败增加持久化退避（`next_attempt_at`）。
+2. 为 LangGraph 的 PostgreSQL checkpoint 路径补集成测试（需要 CI 中的 PostgreSQL 服务）。
 3. 增加浏览器 OIDC Authorization Code + PKCE 登录。
 4. 接入对象存储、保留策略、审计导出和引用持久化。
 5. 增加检索质量数据集运营（黄金题评审流程）、性能压测和生产可观测性。

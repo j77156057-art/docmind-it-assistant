@@ -361,6 +361,7 @@ def create_admin_app(settings: AppSettings | None = None,
             "capabilities": sorted(principal.capabilities),
             "governance_mode": config.governance_mode,
             "ingestion_worker_enabled": config.ingestion_worker_enabled,
+            "ingestion_engine": config.ingestion_engine,
             "governance_require_separation_of_duties":
                 config.governance_require_separation_of_duties,
             "governance_override_allowed": config.governance_allow_admin_override

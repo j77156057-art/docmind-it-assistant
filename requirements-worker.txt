@@ -1,0 +1,15 @@
+# Worker extras: LangGraph orchestration and durable checkpoints.
+#
+# These packages are intentionally NOT part of requirements.txt. The query and admin
+# deployments stay on the core dependency set, and only the indexing worker needs the
+# orchestration framework. Worker deployments install both files:
+#
+#   python -m pip install -r requirements.txt -r requirements-worker.txt
+#
+# Cost of this extra: it pulls the LangChain/LangSmith stack (about 22 distributions,
+# including a second HTTP stack). See docs/isolation-boundary.md before adding it to a
+# deployment that does not run the worker.
+-r requirements.txt
+langgraph==1.2.11
+langgraph-checkpoint-sqlite==3.1.1
+langgraph-checkpoint-postgres==3.1.2
