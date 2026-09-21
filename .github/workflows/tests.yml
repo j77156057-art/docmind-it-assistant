@@ -15,6 +15,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    # The worker's LangGraph checkpointer behaves differently on PostgreSQL than on SQLite
+    # (separate schema, psycopg connection). tests/test_indexing_graph_postgres.py exercises
+    # that path and skips itself when IT_TEST_POSTGRES_URL is absent.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: docmind
+          POSTGRES_PASSWORD: change-me
+          POSTGRES_DB: docmind_it
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -27,6 +45,10 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt -r requirements-worker.txt
       - name: Run tests
+        env:
+          # The integration test creates and drops its own disposable database on this server,
+          # so the role needs CREATEDB (the postgres image's superuser role has it).
+          IT_TEST_POSTGRES_URL: postgresql+psycopg://docmind:change-me@127.0.0.1:5432/docmind_it
         run: python -B -m unittest discover -s tests -v
       - name: Check Python and JavaScript syntax
         run: |

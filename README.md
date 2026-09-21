@@ -326,7 +326,7 @@ node --check web/admin.js
 
 - 异步 Worker 目前只实现 `import` 任务类型：`reindex` / `withdraw` / `evaluate` 会在任务表里显式失败（`job_type_unsupported`），不会静默跳过。
 - 可重试失败的重排没有持久化退避时间（`next_attempt_at`）；当前退避只在 Worker 进程内生效。
-- LangGraph 的 PostgreSQL checkpoint 路径（独立 schema + `PostgresSaver`）已实现但**在本仓库未做集成测试**（CI 无 PostgreSQL 服务）；SQLite 路径有完整测试覆盖。
+- LangGraph 的 PostgreSQL checkpoint 路径由 `tests/test_indexing_graph_postgres.py` 覆盖：CI 拉起 PostgreSQL 16 服务，断言独立 schema 建表、续跑不重复计费、以及 checkpoint 不进入应用 schema（`alembic` 看不到）。本机没有 PostgreSQL 时该模块自动跳过；SQLite 路径由 `tests/test_indexing_graph.py` 覆盖。
 - 发布前评测在发布请求内**同步整跑**黄金题：题集很大时发布会变慢，`evaluate` 任务类型虽已声明但尚未实现异步评测。
 - 办公产物保存在本地目录，尚未接入对象存储、保留策略和审批发布。
 - Web 前端尚未实现 OIDC Authorization Code + PKCE 登录，当前生产入口面向 Bearer Token 客户端或身份网关。

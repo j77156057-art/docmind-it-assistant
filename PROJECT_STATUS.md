@@ -14,7 +14,7 @@
 - 模型重试、Token/费用账本、动态模型路由和密钥脱敏。
 - 知识治理：版本状态机（`queued/processing/staged/indexed/rejected/withdrawn/superseded/failed`）、能力制治理角色、审批发布与职责分离、作废与回滚、审核预览与 `document_version_reviews` 留痕。
 - 异步索引：`ingestion_jobs` 业务队列、`worker` 进程（抢占、心跳、僵尸回收、可重试性分类）、导入接口 `202 + job_id`、任务重试/取消、队列健康诊断。
-- 可选 LangGraph 编排引擎：分批向量化 + checkpoint 断点续跑、独立 checkpoint 存储（不污染应用 schema）、从 `app.py` 出发的 import 闭包边界守卫。
+- 可选 LangGraph 编排引擎：分批向量化 + checkpoint 断点续跑、独立 checkpoint 存储（不污染应用 schema）、从 `app.py` 出发的 import 闭包边界守卫；PostgreSQL 路径由 CI 上的集成测试覆盖（独立 schema、续跑、`alembic` 无差异）。
 - 发布前评测门：`evaluation_cases` / `evaluation_runs` / `evaluation_case_results`，复用生产检索路径的 recall@k、引用命中率、拒答正确率与基线回归，`off/warn/block` 三种门禁模式与 `override_gate` 留痕。
 - 部署编排包含索引 Worker：`scripts/dev.ps1` 启停三个服务（查询/管理/Worker），`compose.yaml` 增加 `worker` 服务并在管理服务与管理端共享 `docmind_sources` 卷、独立 `docmind_worker` 卷保存 checkpoint。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
@@ -55,14 +55,13 @@ node --check web/admin.js
 先设置 `IT_DATABASE_URL=sqlite:///data/queries.db`，或直接用 `.\scripts\dev.ps1 start`
 （它会覆盖为项目内 SQLite 并自动执行迁移，同时启动查询、管理与 Worker 三个进程）。
 
-当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验。
+当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 PostgreSQL 16 服务提供）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验。
 
 ## 后续工作
 
 1. 补充 `reindex` / `withdraw` / `evaluate` 任务类型（含异步评测），并为可重试失败增加持久化退避（`next_attempt_at`）。
-2. 为 LangGraph 的 PostgreSQL checkpoint 路径补集成测试（需要 CI 中的 PostgreSQL 服务）。
-3. 增加浏览器 OIDC Authorization Code + PKCE 登录。
-4. 接入对象存储、保留策略、审计导出和引用持久化。
-5. 增加检索质量数据集运营（黄金题评审流程）、性能压测和生产可观测性。
-6. 引入检索重排与知识域模型（域 B），支持按范围隔离审核与评测。
-7. 提供 Kubernetes、网络策略、备份恢复和灰度发布参考部署。
+2. 增加浏览器 OIDC Authorization Code + PKCE 登录。
+3. 接入对象存储、保留策略、审计导出和引用持久化。
+4. 增加检索质量数据集运营（黄金题评审流程）、性能压测和生产可观测性。
+5. 引入检索重排与知识域模型（域 B），支持按范围隔离审核与评测。
+6. 提供 Kubernetes、网络策略、备份恢复和灰度发布参考部署。

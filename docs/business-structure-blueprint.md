@@ -484,9 +484,10 @@ parse → chunk → embed → persist_chunks → stage → [eval_gate]
    分块内容落到 staging 文件。否则一个 2M 字符文档会把 checkpoint 撑到几十 MB。
 4. **`embed_batch` 自循环而非 fan-out**：逐批串行便于精确 checkpoint，也便于按批计费与重试；
    并行批次会让"哪几批已付费"变得难以判定。
-5. **PostgreSQL checkpoint 路径未做集成测试**：实现完整（独立 schema + `PostgresSaver`），
-   但 CI 没有 PostgreSQL 服务，因此该路径目前只有单元级覆盖（DSN 转换），
-   SQLite 路径有完整测试。已记入 README 当前限制与 PROJECT_STATUS 后续工作。
+5. **PostgreSQL checkpoint 路径的集成测试缺口已在 A-2 关闭**：实现完整（独立 schema + `PostgresSaver`），
+   批次 3 当时 CI 没有 PostgreSQL 服务，因此该路径只有单元级覆盖（DSN 转换），SQLite 路径有完整测试。
+   后续补上 `tests/test_indexing_graph_postgres.py` 与 CI 的 PostgreSQL 16 服务，覆盖建表、续跑不重复计费
+   与"checkpoint 表不落在应用 schema"三条性质；本机没有 PostgreSQL 时该模块自动跳过。
 6. **闭包守卫的强度边界**：它拦截静态 import 与 `import_module`/`__import__`/`sys.modules` 动态导入；
    它无法拦截"运行期通过 `eval` 拼出的模块名"。这是测试而非沙箱，真正的隔离仍靠容器与网络策略。
 
@@ -524,5 +525,5 @@ parse → chunk → embed → persist_chunks → stage → [eval_gate]
 
 ### 后续批次
 
-批次 1-4 全部交付。剩余工作见 `PROJECT_STATUS.md` 的后续工作清单（异步评测任务、PostgreSQL checkpoint 集成测试、
+批次 1-4 全部交付。剩余工作见 `PROJECT_STATUS.md` 的后续工作清单（异步评测任务、
 OIDC PKCE 登录、对象存储与保留策略、可观测性、检索重排与知识域模型、K8s 部署参考）。

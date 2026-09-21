@@ -1,2 +1,6 @@
 -r requirements.txt
 httpx==0.28.1
+# Test and development driver for PostgreSQL. The worker and the migration tooling speak to
+# PostgreSQL through psycopg, which is pure Python and needs libpq at runtime; the binary extra
+# bundles it so a fresh CI runner or a clean developer machine needs no system package.
+psycopg[binary]==3.3.6
