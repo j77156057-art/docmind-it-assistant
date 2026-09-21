@@ -63,6 +63,7 @@ cd docmind-it-assistant
 - 管理控制台：`http://127.0.0.1:8021/`
 - 索引 Worker：无端口，随脚本一起启停（`status` 会显示 `running/stopped`）
 
+脚本会强制 `IT_INGESTION_WORKER_ENABLED=true`（进程环境优先于 `.env`），因为 Worker 已经启动：导入会返回 `202` 并入队，由 Worker 完成解析与向量化。管理端"导入任务"视图可以看到队列与重试。
 
 ```powershell
 .\scripts\dev.ps1 status
@@ -91,6 +92,7 @@ docker compose ps
 docker compose down
 ```
 
+`IT_INGESTION_WORKER_ENABLED=true`：**启用异步导入就必须同时运行 Worker**，否则任务只会排队，
 
 该 Compose 文件用于本地演示，使用开发认证和示例数据库密码，不是生产部署清单。
 
@@ -169,12 +171,26 @@ IT_LOCAL_ROLES=admin,auditor,viewer
 
 ## 异步索引 Worker
 
+默认是同步导入（`IT_INGESTION_WORKER_ENABLED=false`），行为与历史版本一致。开启后，导入端点在校验并落盘后立即返回 `202` 与 `job_id`，解析、分块和向量化交给 Worker：
+
+```dotenv
+IT_INGESTION_WORKER_ENABLED=true
+IT_INGESTION_WORKER_ID=
+IT_INGESTION_POLL_SECONDS=2
+IT_INGESTION_MAX_ATTEMPTS=3
+IT_INGESTION_JOB_TIMEOUT_SECONDS=600
+IT_INGESTION_HEARTBEAT_SECONDS=30
+```
+
 ```powershell
 .venv\Scripts\python -m worker
 .venv\Scripts\python -m worker --once --max-jobs 50
 ```
 
+- **任务表是业务队列，不是框架内部状态**：`ingestion_jobs` 一个 `(job_type, version_id)` 一行，管理端能看、能重试、能取消，审计不依赖任何编排框架的 checkpoint 格式。
 - **抢占**：PostgreSQL 用 `FOR UPDATE SKIP LOCKED`，多副本 Worker 不会重复处理；SQLite 没有该子句，用条件更新兜底（开发/测试单实例）。
+- **心跳与回收**：Worker 在每个步骤后写心跳；超过 `IT_INGESTION_JOB_TIMEOUT_SECONDS` 未心跳的任务被回收重排，尝试次数用尽则判为失败。`IT_INGESTION_HEARTBEAT_SECONDS` 必须小于任务超时，配置层会拒绝非法组合。
+- **失败分类**：`embedding_timeout`、`embedding_unavailable`、HTTP 429/5xx 属可重试，自动重排；解析失败、配置错误、文件缺失属确定性失败，立即终止并写入 `last_error_code`。重试次数用尽后由管理员在任务视图人工决定是否重试。
 - **隐私**：任务表只存业务元数据（版本、发起人、请求号），不存文档正文。
 - **可观测**：`/health/ready` 返回 `ingestion` 诊断块（`stalled`、`queued`、`running`、`failed`）。它**刻意不放进 `checks`**：队列停滞意味着"没有 Worker 在消费"，重启 Pod 解决不了，因此不应让就绪探针失败。
 - **Worker 与治理模式共用配置**：`direct` 模式下索引完成即发布，`review` 模式下停在 `staged` 等审批。
@@ -183,6 +199,7 @@ IT_LOCAL_ROLES=admin,auditor,viewer
 
 工程约束（由 `docs/isolation-boundary.md` §2.1 与自动测试共同保证）：
 
+- **业务状态仍归本项目**：任务可见性、重试与审计读 `ingestion_jobs` 与 `document_versions`；框架 checkpoint 只存续跑所需的内部状态，任何服务都不读它。
 - **checkpoint 不写应用 schema**：默认独立 SQLite 文件；PostgreSQL 下写入独立 schema。否则 `alembic check` 会报出未知表、迁移历史失真——`tests/test_indexing_graph.py` 里有一条测试专门跑完图之后验证 `alembic check` 仍然干净。
 - **LangSmith 默认关闭**：代码不设置任何 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING`（有测试禁止），启用只能是运维的显式动作，且需先完成脱敏评审。
 

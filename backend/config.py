@@ -113,6 +113,12 @@ class AppSettings(BaseModel):
     governance_mode: Literal["direct", "review"] = "direct"
     governance_require_separation_of_duties: bool = True
     governance_allow_admin_override: bool = False
+    ingestion_worker_enabled: bool = False
+    ingestion_worker_id: str = ""
+    ingestion_poll_seconds: float = Field(default=2.0, ge=0.2, le=60.0)
+    ingestion_max_attempts: int = Field(default=3, ge=1, le=10)
+    ingestion_job_timeout_seconds: int = Field(default=600, ge=30, le=86400)
+    ingestion_heartbeat_seconds: int = Field(default=30, ge=5, le=3600)
     auth_mode: Literal["development", "trusted_headers", "oidc", "local"] = "development"
     local_username: str = "admin"
     local_password_hash: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
@@ -171,6 +177,11 @@ class AppSettings(BaseModel):
             raise ValueError("IT_EMBEDDING_DIMENSION 必须为当前索引维度 1024")
         if self.chunk_overlap_chars >= self.chunk_max_chars:
             raise ValueError("IT_CHUNK_OVERLAP_CHARS 必须小于 IT_CHUNK_MAX_CHARS")
+        if self.ingestion_heartbeat_seconds >= self.ingestion_job_timeout_seconds:
+            # Otherwise the reclaim sweep would consider a healthy, still-working job abandoned.
+            raise ValueError(
+                "IT_INGESTION_HEARTBEAT_SECONDS 必须小于 IT_INGESTION_JOB_TIMEOUT_SECONDS"
+            )
         if self.auth_mode == "development" and not (
             _is_loopback_host(self.host) and _is_loopback_host(self.admin_host)
         ):
@@ -266,6 +277,12 @@ class AppSettings(BaseModel):
             governance_allow_admin_override=_bool(
                 read("IT_GOVERNANCE_ALLOW_ADMIN_OVERRIDE", "false"),
             ),
+            ingestion_worker_enabled=_bool(read("IT_INGESTION_WORKER_ENABLED", "false")),
+            ingestion_worker_id=read("IT_INGESTION_WORKER_ID", "").strip(),
+            ingestion_poll_seconds=float(read("IT_INGESTION_POLL_SECONDS", "2")),
+            ingestion_max_attempts=int(read("IT_INGESTION_MAX_ATTEMPTS", "3")),
+            ingestion_job_timeout_seconds=int(read("IT_INGESTION_JOB_TIMEOUT_SECONDS", "600")),
+            ingestion_heartbeat_seconds=int(read("IT_INGESTION_HEARTBEAT_SECONDS", "30")),
             auth_mode=read("IT_AUTH_MODE", "development").strip().lower(),
             local_username=read("IT_LOCAL_USERNAME", "admin").strip(),
             local_password_hash=SecretStr(read("IT_LOCAL_PASSWORD_HASH", "").strip()),
@@ -315,6 +332,10 @@ class AppSettings(BaseModel):
             "governance_mode": self.governance_mode,
             "governance_require_separation_of_duties": self.governance_require_separation_of_duties,
             "governance_allow_admin_override": self.governance_allow_admin_override,
+            "ingestion_worker_enabled": self.ingestion_worker_enabled,
+            "ingestion_poll_seconds": self.ingestion_poll_seconds,
+            "ingestion_max_attempts": self.ingestion_max_attempts,
+            "ingestion_job_timeout_seconds": self.ingestion_job_timeout_seconds,
             "auth_mode": self.auth_mode,
             "log_level": self.log_level,
             "log_json": self.log_json,

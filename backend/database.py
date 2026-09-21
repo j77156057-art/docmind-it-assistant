@@ -17,10 +17,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from .db_models import (
-    IN_FLIGHT_STATUSES, AuditEventRecord, Base,
+    ACTIVE_JOB_STATUSES, IN_FLIGHT_STATUSES, JOB_STATUSES, AuditEventRecord, Base,
     DocumentAclRecord, DocumentChunkRecord, DocumentRecord, DocumentVersionRecord,
     DocumentVersionReviewRecord,
-    ModelUsageRecord, QueryRecord,
+    IngestionJobRecord, ModelUsageRecord, QueryRecord,
     RuntimeModelConfigRecord, RuntimeProviderCredentialRecord,
 )
 from cryptography.fernet import Fernet, InvalidToken
@@ -94,6 +94,7 @@ class QueryDatabase:
                 DocumentRecord.__tablename__, DocumentVersionRecord.__tablename__,
                 DocumentChunkRecord.__tablename__, DocumentAclRecord.__tablename__,
                 DocumentVersionReviewRecord.__tablename__,
+                IngestionJobRecord.__tablename__,
                 AuditEventRecord.__tablename__, RuntimeModelConfigRecord.__tablename__,
                 RuntimeProviderCredentialRecord.__tablename__,
             }
@@ -553,6 +554,314 @@ class QueryDatabase:
             if version is not None and version.status in {"processing", "failed"}:
                 version.status = "queued"
                 version.error_code = None
+
+    @staticmethod
+    def _job_public(row: IngestionJobRecord) -> dict:
+        return {
+            "job_id": row.id,
+            "job_type": row.job_type,
+            "status": row.status,
+            "priority": row.priority,
+            "document_id": row.document_id,
+            "version_id": row.version_id,
+            "attempts": row.attempts,
+            "max_attempts": row.max_attempts,
+            "last_error_code": row.last_error_code,
+            "locked_by": row.locked_by,
+            "created_by_subject_id": row.created_by_subject_id,
+            "request_id": row.request_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+            "heartbeat_at": row.heartbeat_at.isoformat() if row.heartbeat_at else None,
+        }
+
+    def enqueue_ingestion_job(self, *, job_type: str, document_id: int | None = None,
+                              version_id: int | None = None, payload: dict | None = None,
+                              created_by_subject_id: str = "", request_id: str = "",
+                              max_attempts: int = 3, priority: int = 100) -> dict:
+        """Create the job for a target, or re-queue the existing one.
+
+        One row per ``(job_type, version_id)`` keeps repeated submissions of the same version from
+        flooding the queue; re-queueing resets the attempt counter so a manual retry is a real try.
+        """
+        if job_type not in {"import", "reindex", "withdraw", "evaluate"}:
+            raise ValueError("不支持的任务类型")
+        attempts_limit = max(1, int(max_attempts))
+        with self._sessions.begin() as session:
+            existing = None
+            if version_id is not None:
+                existing = session.scalar(select(IngestionJobRecord).where(
+                    IngestionJobRecord.job_type == job_type,
+                    IngestionJobRecord.version_id == int(version_id),
+                ))
+            if existing is not None:
+                if existing.status == "running":
+                    raise GovernanceError("job_already_running", "该版本已有任务正在运行")
+                existing.status = "queued"
+                existing.attempts = 0
+                existing.max_attempts = attempts_limit
+                existing.last_error_code = None
+                existing.locked_by = None
+                existing.locked_at = None
+                existing.heartbeat_at = None
+                existing.started_at = None
+                existing.finished_at = None
+                existing.payload = dict(payload or {})
+                existing.request_id = (request_id or "")[:128]
+                if created_by_subject_id:
+                    existing.created_by_subject_id = created_by_subject_id[:64]
+                session.flush()
+                return self._job_public(existing)
+            job = IngestionJobRecord(
+                job_type=job_type,
+                status="queued",
+                priority=int(priority),
+                document_id=int(document_id) if document_id is not None else None,
+                version_id=int(version_id) if version_id is not None else None,
+                payload=dict(payload or {}),
+                attempts=0,
+                max_attempts=attempts_limit,
+                created_by_subject_id=(created_by_subject_id or "")[:64] or None,
+                request_id=(request_id or "")[:128],
+                created_at=datetime.now(timezone.utc),
+            )
+            session.add(job)
+            session.flush()
+            return self._job_public(job)
+
+    def claim_ingestion_job(self, worker_id: str) -> dict | None:
+        """Atomically take the next queued job for this worker.
+
+        PostgreSQL uses ``FOR UPDATE SKIP LOCKED`` so several workers never take the same job.
+        SQLite has no such clause; the portable branch performs a conditional update and treats a
+        zero row count as "someone else won the race".
+        """
+        now = datetime.now(timezone.utc)
+        worker = (worker_id or "worker")[:64]
+        with self._sessions.begin() as session:
+            if self.backend == "postgresql":
+                claimed_id = session.execute(text("""
+                    UPDATE ingestion_jobs
+                       SET status = 'running', attempts = attempts + 1,
+                           locked_by = :worker, locked_at = :now,
+                           heartbeat_at = :now, started_at = COALESCE(started_at, :now)
+                     WHERE id = (
+                         SELECT id FROM ingestion_jobs
+                          WHERE status = 'queued' AND attempts < max_attempts
+                          ORDER BY priority, id
+                          FOR UPDATE SKIP LOCKED
+                          LIMIT 1
+                     )
+                 RETURNING id
+                """), {"worker": worker, "now": now}).scalar()
+                if claimed_id is None:
+                    return None
+                job_id = int(claimed_id)
+            else:
+                candidate = session.scalar(
+                    select(IngestionJobRecord.id)
+                    .where(
+                        IngestionJobRecord.status == "queued",
+                        IngestionJobRecord.attempts < IngestionJobRecord.max_attempts,
+                    )
+                    .order_by(IngestionJobRecord.priority, IngestionJobRecord.id)
+                    .limit(1)
+                )
+                if candidate is None:
+                    return None
+                claimed = session.execute(
+                    update(IngestionJobRecord)
+                    .where(
+                        IngestionJobRecord.id == candidate,
+                        IngestionJobRecord.status == "queued",
+                    )
+                    .values(
+                        status="running",
+                        attempts=IngestionJobRecord.attempts + 1,
+                        locked_by=worker,
+                        locked_at=now,
+                        heartbeat_at=now,
+                        started_at=func.coalesce(IngestionJobRecord.started_at, now),
+                    )
+                ).rowcount
+                if not claimed:
+                    return None
+                job_id = int(candidate)
+            job = session.get(IngestionJobRecord, job_id)
+            return self._job_public(job) if job is not None else None
+
+    def heartbeat_ingestion_job(self, job_id: int, worker_id: str = "") -> bool:
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            conditions = [
+                IngestionJobRecord.id == int(job_id),
+                IngestionJobRecord.status == "running",
+            ]
+            if worker_id:
+                conditions.append(IngestionJobRecord.locked_by == worker_id[:64])
+            updated = session.execute(
+                update(IngestionJobRecord).where(*conditions).values(heartbeat_at=now)
+            ).rowcount
+            return bool(updated)
+
+    def complete_ingestion_job(self, job_id: int, worker_id: str = "") -> bool:
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            conditions = [
+                IngestionJobRecord.id == int(job_id),
+                IngestionJobRecord.status == "running",
+            ]
+            if worker_id:
+                conditions.append(IngestionJobRecord.locked_by == worker_id[:64])
+            updated = session.execute(
+                update(IngestionJobRecord).where(*conditions).values(
+                    status="succeeded", finished_at=now, locked_by=None,
+                    locked_at=None, heartbeat_at=now, last_error_code=None,
+                )
+            ).rowcount
+            return bool(updated)
+
+    def fail_ingestion_job(self, job_id: int, error_code: str, *,
+                           retryable: bool) -> dict:
+        """Record a failure and decide between another attempt and a terminal failure."""
+        now = datetime.now(timezone.utc)
+        code = (error_code or "job_failed")[:64]
+        with self._sessions.begin() as session:
+            job = session.get(IngestionJobRecord, int(job_id))
+            if job is None:
+                raise ValueError("任务不存在")
+            can_retry = bool(retryable and job.attempts < job.max_attempts)
+            job.last_error_code = code
+            job.locked_by = None
+            job.locked_at = None
+            job.heartbeat_at = None
+            if can_retry:
+                job.status = "queued"
+            else:
+                job.status = "failed"
+                job.finished_at = now
+            session.flush()
+            return self._job_public(job)
+
+    def reclaim_stale_ingestion_jobs(self, *, timeout_seconds: int = 600) -> int:
+        """Return abandoned ``running`` jobs to the queue, or fail them when out of attempts."""
+        now = datetime.now(timezone.utc)
+        deadline = now - timedelta(seconds=max(30, int(timeout_seconds)))
+        with self._sessions.begin() as session:
+            stale = session.scalars(select(IngestionJobRecord).where(
+                IngestionJobRecord.status == "running",
+                IngestionJobRecord.heartbeat_at < deadline,
+            )).all()
+            reclaimed = 0
+            for job in stale:
+                job.last_error_code = job.last_error_code or "job_abandoned"
+                job.locked_by = None
+                job.locked_at = None
+                job.heartbeat_at = None
+                if job.attempts < job.max_attempts:
+                    job.status = "queued"
+                else:
+                    job.status = "failed"
+                    job.finished_at = now
+                reclaimed += 1
+            session.flush()
+            return reclaimed
+
+    def list_ingestion_jobs(self, limit: int = 50, status: str | None = None) -> list[dict]:
+        statement = (
+            select(IngestionJobRecord, DocumentRecord, DocumentVersionRecord)
+            .outerjoin(DocumentRecord, DocumentRecord.id == IngestionJobRecord.document_id)
+            .outerjoin(
+                DocumentVersionRecord, DocumentVersionRecord.id == IngestionJobRecord.version_id,
+            )
+        )
+        if status:
+            if status not in JOB_STATUSES:
+                raise ValueError("任务状态无效")
+            statement = statement.where(IngestionJobRecord.status == status)
+        statement = statement.order_by(IngestionJobRecord.id.desc()).limit(
+            max(1, min(int(limit), 200)),
+        )
+        with self._sessions() as session:
+            rows = session.execute(statement).all()
+        return [{
+            **self._job_public(job),
+            "title": document.title if document is not None else None,
+            "source_key": document.source_key if document is not None else None,
+            "version": version.version if version is not None else None,
+            "version_status": version.status if version is not None else None,
+        } for job, document, version in rows]
+
+    def retry_ingestion_job(self, job_id: int, *, actor_subject_id: str = "") -> dict:
+        with self._sessions.begin() as session:
+            job = session.get(IngestionJobRecord, int(job_id))
+            if job is None:
+                raise ValueError("任务不存在")
+            if job.status in ACTIVE_JOB_STATUSES:
+                raise GovernanceError("job_already_active", "任务正在排队或运行，无需重试")
+            job.status = "queued"
+            job.attempts = 0
+            job.last_error_code = None
+            job.locked_by = None
+            job.locked_at = None
+            job.heartbeat_at = None
+            job.started_at = None
+            job.finished_at = None
+            if actor_subject_id:
+                job.request_id = f"retry-by-{actor_subject_id[:32]}-{job.request_id}"[:128]
+            session.flush()
+            return self._job_public(job)
+
+    def cancel_ingestion_job(self, job_id: int, *, actor_subject_id: str = "") -> dict:
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            job = session.get(IngestionJobRecord, int(job_id))
+            if job is None:
+                raise ValueError("任务不存在")
+            if job.status != "queued":
+                raise GovernanceError("job_not_cancellable", "只能取消尚未开始的任务")
+            job.status = "cancelled"
+            job.finished_at = now
+            job.last_error_code = "cancelled"
+            if actor_subject_id:
+                job.request_id = f"cancel-by-{actor_subject_id[:32]}-{job.request_id}"[:128]
+            session.flush()
+            return self._job_public(job)
+
+    def ingestion_queue_stats(self, *, timeout_seconds: int = 600) -> dict:
+        now = datetime.now(timezone.utc)
+        deadline = now - timedelta(seconds=max(30, int(timeout_seconds)))
+        with self._sessions() as session:
+            counts = {
+                status: int(count or 0)
+                for status, count in session.execute(
+                    select(IngestionJobRecord.status, func.count()).group_by(
+                        IngestionJobRecord.status
+                    )
+                ).all()
+            }
+            stale_running = int(session.scalar(
+                select(func.count()).select_from(IngestionJobRecord).where(
+                    IngestionJobRecord.status == "running",
+                    IngestionJobRecord.heartbeat_at < deadline,
+                )
+            ) or 0)
+            stale_queued = int(session.scalar(
+                select(func.count()).select_from(IngestionJobRecord).where(
+                    IngestionJobRecord.status == "queued",
+                    IngestionJobRecord.created_at < deadline,
+                )
+            ) or 0)
+        return {
+            "queued": counts.get("queued", 0),
+            "running": counts.get("running", 0),
+            "succeeded": counts.get("succeeded", 0),
+            "failed": counts.get("failed", 0),
+            "cancelled": counts.get("cancelled", 0),
+            "stale_running": stale_running,
+            "stale_queued": stale_queued,
+        }
 
     def pending_review_versions(self, limit: int = 100) -> list[dict]:
         """Versions waiting for a review decision; never retrievable until published."""

@@ -629,6 +629,52 @@
     renderJobs(!!payload.worker_enabled);
   }
 
+  function renderJobs(workerEnabled) {
+    const queue = state.queue || {};
+    $('metricQueued').textContent = Number(queue.queued || 0).toLocaleString();
+    $('metricRunning').textContent = Number(queue.running || 0).toLocaleString();
+    $('metricFailedJobs').textContent = Number(queue.failed || 0).toLocaleString();
+    $('metricSucceeded').textContent = Number(queue.succeeded || 0).toLocaleString();
+    $('workerState').textContent = workerEnabled ? '异步导入已启用' : '异步导入未启用';
+    $('jobsHint').textContent = workerEnabled
+      ? '导入接口把文档排队，由 Worker 进程完成解析与向量化；失败可重试，超过重试上限后需要人工介入。'
+      : '当前为同步导入（IT_INGESTION_WORKER_ENABLED=false），此列表只显示历史任务。';
+
+    const body = $('jobRows');
+    body.replaceChildren();
+    $('jobsCount').textContent = `${state.jobs.length} 条`;
+    $('jobsEmpty').hidden = state.jobs.length > 0;
+    for (const item of state.jobs) {
+      const row = document.createElement('tr');
+      const jobCell = document.createElement('td');
+      jobCell.textContent = `#${item.job_id} · ${item.job_type}`;
+      const titleCell = document.createElement('td');
+      titleCell.textContent = item.title || '-';
+      const versionCell = document.createElement('td');
+      versionCell.textContent = item.version ? `v${item.version}` : '-';
+      const statusCell = document.createElement('td');
+      statusCell.appendChild(statusBadge(item.status));
+      const attemptCell = document.createElement('td');
+      attemptCell.textContent = `${Number(item.attempts || 0)}/${Number(item.max_attempts || 0)}`;
+      const errorCell = document.createElement('td');
+      errorCell.textContent = item.last_error_code || '-';
+      const timeCell = document.createElement('td');
+      timeCell.textContent = formatTime(item.finished_at || item.started_at || item.created_at);
+      const actionCell = document.createElement('td');
+      const actions = document.createElement('div');
+      actions.className = 'version-actions';
+      if (item.status === 'failed' || item.status === 'cancelled') {
+        actions.appendChild(versionAction('重试', 'document.write', () => retryJob(item.job_id)));
+      }
+      if (item.status === 'queued') {
+        actions.appendChild(versionAction('取消', 'document.write', () => cancelJob(item.job_id)));
+      }
+      actionCell.appendChild(actions);
+      row.append(jobCell, titleCell, versionCell, statusCell, attemptCell, errorCell, timeCell, actionCell);
+      body.appendChild(row);
+    }
+  }
+
   async function retryJob(jobId) {
     try {
       await api(`/api/admin/ingestion/jobs/${jobId}/retry`, { method: 'POST' });

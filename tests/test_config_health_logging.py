@@ -144,7 +144,40 @@ class HealthAndLoggingTests(unittest.TestCase):
         self.assertEqual(payload["request_id"], "req-unit-test")
         self.assertEqual(payload["event"], "unit_event")
 
+    def test_operational_log_fields_are_emitted_and_content_is_dropped(self):
+        """The log allowlist must carry the operational fields our code relies on.
 
+        Those fields were silently dropped once, which made worker and evaluation logs useless
+        without any error. The second half of this test pins the privacy side: content-shaped keys
+        stay out, so a caller cannot leak a question or a document body by passing one.
+        """
+        formatter = JsonFormatter()
+        record = logging.LogRecord("it", logging.INFO, __file__, 1, "ignored", (), None)
+        record.event = "ingestion_job_finished"
+        record.job_id = 7
+        record.job_type = "import"
+        record.status = "succeeded"
+        record.attempts = 2
+        record.retryable = False
+        record.engine = "langgraph"
+        record.worker_id = "w-1"
+        record.run_id = 3
+        # Not on the allowlist: these must never appear.
+        record.question = "password-is-secret"
+        record.detail = "document body"
+        record.answer = "internal-only"
+
+        payload = json.loads(formatter.format(record))
+
+        self.assertEqual(payload["job_id"], 7)
+        self.assertEqual(payload["job_type"], "import")
+        self.assertEqual(payload["status"], "succeeded")
+        self.assertEqual(payload["attempts"], 2)
+        self.assertIs(payload["retryable"], False)
+        self.assertEqual(payload["engine"], "langgraph")
+        self.assertEqual(payload["worker_id"], "w-1")
+        for leaked in ("question", "detail", "answer", "password-is-secret", "document body"):
+            self.assertNotIn(leaked, json.dumps(payload))
 
 if __name__ == "__main__":
     unittest.main()

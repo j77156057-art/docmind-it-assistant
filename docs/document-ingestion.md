@@ -47,11 +47,16 @@ CLI 导入同样尊重 `IT_GOVERNANCE_MODE`：`review` 模式下命令执行完�
 
 ## 异步索引（Worker）
 
+`IT_INGESTION_WORKER_ENABLED=true` 时，管理端导入接口只做校验、落盘和入队，随后立即返回 `202` 与 `job_id`；解析、分块、向量化由独立 Worker 完成：
+
 运维要点：
 
 | 现象 | 位置 | 处理 |
 |---|---|---|
 | 任务长期停留在 `queued` | `/api/admin/ingestion/jobs`、`/health/ready` 的 `ingestion.stale` | Worker 未运行或已退出；启动 Worker 后会自动消费 |
+| 任务卡在 `running` | 同上 | 心跳超过 `IT_INGESTION_JOB_TIMEOUT_SECONDS` 后被自动回收重排 |
+| `failed` 且 `last_error_code=parse_failed` | 任务视图 | 文档损坏或格式不支持，需替换文件后重新导入 |
+| `failed` 且 `last_error_code=embedding_*` | 任务视图 | Provider 侧问题；确认网络与配额后在任务视图点"重试" |
 | `job_type_unsupported` | 任务视图 | 该任务类型尚未实现（当前仅 `import`） |
 
 `ingestion/cli.py` 的同步导入始终保留：Worker 子系统不可用时，管理员仍可导入知识，这是刻意保留的降级通道。

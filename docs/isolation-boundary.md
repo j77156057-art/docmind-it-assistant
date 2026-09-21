@@ -27,6 +27,8 @@
 
 1. **只出现在非查询进程**：`worker/` 与 `ingestion/` 可以导入；`app.py`、`assistant/`、`backend/`
    不得出现在其 import 闭包内（由 §5 的闭包测试证明，而不是靠人工评审）。
+2. **业务状态仍归本项目所有**：任务可见性、重试与审计读的是 `ingestion_jobs` 与
+   `document_versions`；框架 checkpoint 只保存续跑所需的内部状态，任何服务都不得读取它。
 5. **LangSmith 默认关闭**：代码不得设置 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING` 等环境变量；
    启用只能是运维的显式动作，且必须先完成脱敏评审（禁止上报正文、问题、回答与密钥）。
 

@@ -13,6 +13,7 @@
 - DOCX、PDF、PPTX、XLSX 结构化生成、回读验证和受控下载。
 - 模型重试、Token/费用账本、动态模型路由和密钥脱敏。
 - 知识治理：版本状态机（`queued/processing/staged/indexed/rejected/withdrawn/superseded/failed`）、能力制治理角色、审批发布与职责分离、作废与回滚、审核预览与 `document_version_reviews` 留痕。
+- 异步索引：`ingestion_jobs` 业务队列、`worker` 进程（抢占、心跳、僵尸回收、可重试性分类）、导入接口 `202 + job_id`、任务重试/取消、队列健康诊断。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 

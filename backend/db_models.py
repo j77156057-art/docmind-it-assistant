@@ -32,6 +32,12 @@ VERSION_STATUSES = (
 REVIEW_ACTIONS = (
     "submit", "reopen", "approve", "reject", "publish", "withdraw", "rollback", "override_gate",
 )
+# Ingestion queue vocabulary. Deliberately small: business states the administrator can see and
+# act on, not the framework's internal execution states.
+JOB_TYPES = ("import", "reindex", "withdraw", "evaluate")
+JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
+ACTIVE_JOB_STATUSES = ("queued", "running")
+
 # Statuses that may never be returned by any retrieval path.
 UNPUBLISHED_STATUSES = tuple(
     status for status in VERSION_STATUSES if status != "indexed"
@@ -260,6 +266,51 @@ class RuntimeProviderCredentialRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
     )
+
+
+class IngestionJobRecord(Base):
+    """Business queue for document indexing work.
+
+    The queue is deliberately owned by this application rather than by an orchestration
+    framework: administrators must be able to see, retry and cancel jobs, and the audit trail
+    must not depend on a framework's internal checkpoint format.
+    """
+
+    __tablename__ = "ingestion_jobs"
+    __table_args__ = (
+        CheckConstraint(_in_clause("job_type", JOB_TYPES), name="ck_ingestion_jobs_type"),
+        CheckConstraint(_in_clause("status", JOB_STATUSES), name="ck_ingestion_jobs_status"),
+        # One job row per (type, version): a re-import or a rejected retry re-queues the same
+        # row instead of stacking duplicates.
+        UniqueConstraint("job_type", "version_id", name="uq_ingestion_jobs_target"),
+        Index("ix_ingestion_jobs_claim", "status", "priority", "id"),
+        Index("ix_ingestion_jobs_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_type: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=True, index=True,
+    )
+    version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=True, index=True,
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditEventRecord(Base):

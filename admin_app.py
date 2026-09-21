@@ -306,6 +306,14 @@ def create_admin_app(settings: AppSettings | None = None,
         embedding_ok, embedding_reason = embeddings.healthcheck()
         auth_ok, auth_reason = authenticator.healthcheck()
         artifacts_ok, artifacts_reason = artifacts.healthcheck()
+        queue = database.ingestion_queue_stats(
+            timeout_seconds=config.ingestion_job_timeout_seconds,
+        )
+        # A stalled queue is only a problem when this service is supposed to enqueue work:
+        # jobs that sit past the job timeout mean no worker is consuming them.
+        queue_stalled = config.ingestion_worker_enabled and bool(
+            queue["stale_queued"] or queue["stale_running"]
+        )
         assets = [
             config.admin_index_path,
             config.admin_index_path.with_name("admin.css"),
@@ -327,6 +335,17 @@ def create_admin_app(settings: AppSettings | None = None,
                 "ok": ready,
                 "status": "ready" if ready else "not_ready",
                 "checks": checks,
+                # Diagnostics, deliberately outside `checks`: a stalled queue means "no worker is
+                # consuming jobs", which a restart cannot fix, so it must not fail readiness and
+                # trigger pod restarts. Alerting watches this field.
+                "ingestion": {
+                    "worker_enabled": config.ingestion_worker_enabled,
+                    "stalled": queue_stalled,
+                    "queued": queue["queued"],
+                    "running": queue["running"],
+                    "failed": queue["failed"],
+                    "stale": queue["stale_queued"] + queue["stale_running"],
+                },
             },
             status_code=200 if ready else 503,
         )
@@ -341,6 +360,7 @@ def create_admin_app(settings: AppSettings | None = None,
             "groups": sorted(principal.groups),
             "capabilities": sorted(principal.capabilities),
             "governance_mode": config.governance_mode,
+            "ingestion_worker_enabled": config.ingestion_worker_enabled,
             "governance_require_separation_of_duties":
                 config.governance_require_separation_of_duties,
             "governance_override_allowed": config.governance_allow_admin_override
@@ -585,6 +605,64 @@ def create_admin_app(settings: AppSettings | None = None,
         )
         return {"ok": True, "version": state}
 
+    @application.get("/api/admin/ingestion/jobs")
+    async def ingestion_jobs(status: str = Query("", max_length=16),
+                             limit: int = Query(50, ge=1, le=200),
+                             _principal: Principal = Depends(
+                                 require_capability("document.read"))):
+        try:
+            items = database.list_ingestion_jobs(limit=limit, status=status or None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {
+            "ok": True,
+            "items": items,
+            "worker_enabled": config.ingestion_worker_enabled,
+            "queue": database.ingestion_queue_stats(
+                timeout_seconds=config.ingestion_job_timeout_seconds,
+            ),
+        }
+
+    @application.post("/api/admin/ingestion/jobs/{job_id}/retry")
+    async def retry_ingestion_job(job_id: int,
+                                  principal: Principal = Depends(
+                                      require_capability("document.write"))):
+        try:
+            job = database.retry_ingestion_job(job_id, actor_subject_id=principal.subject_id)
+        except GovernanceError as exc:
+            raise governance_http_error(exc) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="ingestion_job_retry",
+            target_type="ingestion_job",
+            target_ref=str(job_id),
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True, "job": job}
+
+    @application.post("/api/admin/ingestion/jobs/{job_id}/cancel")
+    async def cancel_ingestion_job(job_id: int,
+                                   principal: Principal = Depends(
+                                       require_capability("document.write"))):
+        try:
+            job = database.cancel_ingestion_job(job_id, actor_subject_id=principal.subject_id)
+        except GovernanceError as exc:
+            raise governance_http_error(exc) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="ingestion_job_cancel",
+            target_type="ingestion_job",
+            target_ref=str(job_id),
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True, "job": job}
+
     @application.get("/api/admin/audit-events")
     async def audit_events(limit: int = 100,
                            _principal: Principal = Depends(require_capability("audit.read"))):
@@ -758,7 +836,8 @@ def create_admin_app(settings: AppSettings | None = None,
                             raise ValueError("文档超过允许的大小")
                         stream.write(chunk)
                 result = await run_in_threadpool(
-                    ingestion.import_file,
+                    ingestion.register_version if config.ingestion_worker_enabled
+                    else ingestion.import_file,
                     target,
                     title=title.strip() or Path(filename).stem,
                     source_key=source,
@@ -774,6 +853,42 @@ def create_admin_app(settings: AppSettings | None = None,
                     version=result["version"],
                     filename=filename,
                 )
+                if not config.ingestion_worker_enabled:
+                    database.record_audit_event(
+                        actor_subject_id=principal.subject_id,
+                        action="document_import",
+                        target_type="document",
+                        target_ref=source,
+                        result="success",
+                        request_id=request_id,
+                    )
+                    return {
+                        "ok": True,
+                        **result,
+                        "governance_mode": config.governance_mode,
+                        "review_required": result.get("status") == "staged",
+                    }
+                # Asynchronous path: the upload is durable and the version exists, so the request
+                # can return immediately; indexing happens in the worker.
+                job = None
+                if not result["duplicate"]:
+                    try:
+                        job = await run_in_threadpool(
+                            database.enqueue_ingestion_job,
+                            job_type="import",
+                            document_id=result["document_id"],
+                            version_id=result["version_id"],
+                            payload={"filename": filename, "version": result["version"]},
+                            created_by_subject_id=principal.subject_id,
+                            request_id=request_id,
+                            max_attempts=config.ingestion_max_attempts,
+                        )
+                    except Exception:
+                        # Never leave a version sitting in `queued` with no job behind it.
+                        await run_in_threadpool(
+                            database.fail_document_import, result["version_id"], "enqueue_failed",
+                        )
+                        raise
                 database.record_audit_event(
                     actor_subject_id=principal.subject_id,
                     action="document_import",
@@ -782,12 +897,20 @@ def create_admin_app(settings: AppSettings | None = None,
                     result="success",
                     request_id=request_id,
                 )
-                return {
-                    "ok": True,
-                    **result,
-                    "governance_mode": config.governance_mode,
-                    "review_required": result.get("status") == "staged",
-                }
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        **result,
+                        "queued": job is not None,
+                        "job_id": job["job_id"] if job else None,
+                        "status": "queued" if job else result.get("status"),
+                        # Predicted from this service's configuration; the worker applies the same
+                        # setting and the document list shows the authoritative result.
+                        "governance_mode": config.governance_mode,
+                        "review_required": config.governance_mode == "review",
+                    },
+                    status_code=202 if job else 200,
+                )
         except GovernanceError as exc:
             database.record_audit_event(
                 actor_subject_id=principal.subject_id,
