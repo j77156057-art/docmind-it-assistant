@@ -114,6 +114,11 @@ class EvaluationService:
             case["question"], None,
             subject_id=EVALUATION_SUBJECT, roles=EVALUATION_ROLES, groups=(),
             document_version_id=document_version_id,
+            # The ACL identity above stays a plain viewer on purpose: the gate must keep
+            # exercising the production retrieval path. Clearance, however, has to be granted
+            # explicitly. Without it a confidential version would silently measure as 0 recall
+            # and could never pass its own publish gate.
+            allow_confidential=True,
         )[: self.top_k]
         latency_ms = round((time.perf_counter() - started) * 1000)
         detail: dict = {"hit_count": len(hits)}

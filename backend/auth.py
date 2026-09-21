@@ -14,6 +14,29 @@ from jwt import InvalidTokenError, PyJWKClient
 
 ROLE_LEVELS = {"viewer": 1, "auditor": 2, "admin": 3}
 
+# -- Document classification ---------------------------------------------------
+#
+# `classification` is a label stored on the document itself (public / internal / confidential).
+# It takes part in authorization in exactly one direction: a higher classification can only
+# *narrow* who may read the document, never widen it. Widening remains the job of `access_scope`
+# and the document ACL, so a confidential document marked `public` is still unreadable to a
+# principal without clearance.
+PUBLIC = "public"
+INTERNAL = "internal"
+CONFIDENTIAL = "confidential"
+CLASSIFICATIONS = (PUBLIC, INTERNAL, CONFIDENTIAL)
+OPEN_CLASSIFICATIONS = frozenset({PUBLIC, INTERNAL})
+# A higher rank is stricter. The rank is only used to decide whether a label change would be a
+# relaxation: raising a classification is allowed, lowering it is not.
+CLASSIFICATION_RANK = {PUBLIC: 0, INTERNAL: 1, CONFIDENTIAL: 2}
+
+# Reading a confidential document requires this explicit clearance. Level 2 (auditor) is the
+# lowest level that already reads documents, which makes it the natural clearance floor.
+# Knowledge-governance roles stay at level 0 and are unaffected: they hold no `query.read`, so
+# they never reach the retrieval API, and they read documents through the capability-checked
+# admin surface instead.
+CONFIDENTIAL_CLEARANCE = "document.read.confidential"
+
 # Knowledge-governance roles are deliberately NOT levels. Making review or publish a higher
 # level than admin would let one role inherit the other's duties, which makes separation of
 # duties impossible to enforce. They grant capabilities instead.
@@ -30,6 +53,7 @@ LEVEL_CAPABILITIES = {
     "audit.read": 2,
     "usage.read": 2,
     "artifact.read": 2,
+    CONFIDENTIAL_CLEARANCE: 2,
     "document.write": 3,
     "acl.write": 3,
     "model.write": 3,
@@ -48,6 +72,34 @@ ROLE_CAPABILITIES = {
     }),
     "evaluation_runner": frozenset({"document.read", "evaluation.run"}),
 }
+
+def normalize_classification(classification: str | None) -> str:
+    """Canonical form of a classification label. Rejects anything unknown, so a typo fails at
+    the import boundary instead of silently landing in the database as an unenforced label."""
+    normalized = str(classification or "").strip().lower()
+    if normalized not in CLASSIFICATIONS:
+        raise ValueError("文档密级无效")
+    return normalized
+
+
+def is_open_classification(classification: str | None) -> bool:
+    """True when the label is readable by any authenticated principal.
+
+    Anything that is not an explicitly open label fails closed, so an unknown or malformed value
+    restricts a document rather than leaking it. The retrieval SQL builds its predicate from
+    ``OPEN_CLASSIFICATIONS`` for the same reason.
+    """
+    return str(classification or "").strip().lower() in OPEN_CLASSIFICATIONS
+
+
+def allows_classification(classification: str | None, capabilities) -> bool:
+    """Whether a principal holding ``capabilities`` may read a document of this classification.
+
+    This is an *extra* restriction, never a grant: callers still have to satisfy the document
+    ACL before a document becomes readable.
+    """
+    return is_open_classification(classification) or CONFIDENTIAL_CLEARANCE in capabilities
+
 
 SESSION_COOKIE = "docmind_session"
 
@@ -82,6 +134,15 @@ class Principal:
 
     def has_capability(self, capability: str) -> bool:
         return capability in self.capabilities
+
+    @property
+    def confidential_clearance(self) -> bool:
+        """Whether this principal may read documents classified `confidential`.
+
+        Callers pass this to retrieval as an explicit flag; classification is an additional
+        restriction, so `False` only ever hides documents — it never unlocks any.
+        """
+        return CONFIDENTIAL_CLEARANCE in self.capabilities
 
     @property
     def acl_roles(self) -> tuple[str, ...]:

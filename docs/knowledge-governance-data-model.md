@@ -306,7 +306,10 @@ if normalized_scope is not None:
 
 强制控制（批次 1 必须实现）：
 
-1. 导入**不得**修改已发布文档的 `access_scope` / `classification`；
+1. 导入**不得**修改已发布文档的 `access_scope`；`classification` 则**只能提升、不能降低**
+   （`classification_cannot_be_lowered`）。前者在批次 1 落地；后者在后续"密级参与访问控制"
+   时补上——在密级还只是标注的年代，把它调低无害，因此当时没有守卫，但它现在会直接决定
+   谁能读，降密就成了一条提权路径。
 2. 访问范围变更必须走独立入口，要求 `acl.write` 能力，并写审计（`set_document_acl` 已有此约束，`database.py:605`）；
 3. 新增测试：编辑角色导入同名 `source_key` 且传 `access_scope=public` → 被拒，文档原范围不变。
 

@@ -1,7 +1,9 @@
 from .config import AppSettings
 from .auth import (
-    GOVERNANCE_ROLES, KNOWN_ROLES, ROLE_CAPABILITIES, ROLE_LEVELS,
-    AuthenticationError, OIDCAuthenticator, Principal, subject_identifier,
+    CLASSIFICATIONS, CLASSIFICATION_RANK, GOVERNANCE_ROLES, KNOWN_ROLES, ROLE_CAPABILITIES,
+    ROLE_LEVELS,
+    AuthenticationError, OIDCAuthenticator, Principal, allows_classification,
+    is_open_classification, normalize_classification, subject_identifier,
 )
 from .database import GovernanceError, QueryDatabase
 from .document_sources import DocumentSourceError, DocumentSourceStore
@@ -19,6 +21,9 @@ __all__ = [
     "AppSettings", "AuthenticationError", "OIDCAuthenticator", "Principal",
     "GOVERNANCE_ROLES", "KNOWN_ROLES", "ROLE_CAPABILITIES", "ROLE_LEVELS",
     "GovernanceError",
+    "CLASSIFICATIONS", "CLASSIFICATION_RANK", "allows_classification",
+    "is_open_classification",
+    "normalize_classification",
     "ModelRouter", "QueryDatabase", "PROVIDERS", "ProviderSpec",
     "DocumentSourceError", "DocumentSourceStore", "ModelRuntime", "ModelRuntimeError",
     "EvaluationError", "EvaluationService",

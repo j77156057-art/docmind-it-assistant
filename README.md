@@ -146,6 +146,27 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 | `GET` | `/api/admin/evaluation/runs` | `document.read` | 查看评测运行与门禁结论 |
 | `GET` | `/api/admin/evaluation/runs/{id}` | `document.read` | 查看逐题结果 |
 
+### 文档密级（classification）
+
+导入时可指定密级，三档：`public` / `internal` / `confidential`（默认 `internal`）。
+
+密级参与授权，且**只收紧、不放大**：
+
+| 密级 | 还需具备什么才能被检索到 |
+|---|---|
+| `public` / `internal` | 无附加条件（仍须通过 ACL 判定） |
+| `confidential` | 主体额外持有 `document.read.confidential`（等级 ≥ `auditor`） |
+
+最终可见 = **ACL 判定通过** 且 **密级允许**，两者是「与」关系，因此：
+
+- 一份 `access_scope=public` 但密级为 `confidential` 的文档，`viewer` 依然检索不到；
+- 只有 clearance 而 ACL 未授权同样检索不到——密级不是万能钥匙；
+- 已被显式写进文档 ACL 的 `viewer` 也仍读不到机密文档——密级是附加条件，不是可替代条件。
+
+知识治理角色（编辑/审核/发布）等级为 0、不持 `query.read`，本来就不走检索接口，而是通过能力校验的管理端读写文档，因此不受此规则影响。
+
+无法识别的密级值**失败关闭**（按最严处理），导入入口另外直接拒绝未知值并返回 400。密级在导入时**只能提升、不能降低**：已存在的文档不能靠再次导入把 `confidential` 降为 `internal`，否则那是一条绕过密级的提权路径（与 `access_scope` 的同类守卫一致）。降密目前没有 API 入口，需要 DBA 直接改库。
+
 ## 知识治理：从"导入即发布"到审批发布
 
 角色分两层：等级角色 `viewer < auditor < admin` 决定后台读取与配置权限；治理角色按**能力**授权，与等级正交，因此可以强制职责分离。

@@ -19,7 +19,7 @@ from backend import (
     AppSettings, AuthenticationError, EmbeddingClient, EvaluationError, EvaluationService,
     GovernanceError, HybridRetriever, OIDCAuthenticator, Principal, DocumentSourceStore,
     ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase, build_embedding_client,
-    configure_logging, log_event, request_id_context,
+    configure_logging, log_event, normalize_classification, request_id_context,
 )
 from ingestion import DocumentIngestionService
 from backend.artifacts import ARTIFACT_MEDIA_TYPES, ArtifactError, ArtifactService
@@ -1009,6 +1009,13 @@ def create_admin_app(settings: AppSettings | None = None,
             raise HTTPException(status_code=400, detail="仅支持 Markdown、TXT、PDF 和 DOCX")
         if access_scope not in {"public", "restricted"}:
             raise HTTPException(status_code=400, detail="文档访问范围无效")
+        # Validated here as well as in the repository, so a bad label is a 400 for the operator
+        # instead of a 500 from deeper down. Empty means "leave it alone" on a re-import.
+        if classification.strip():
+            try:
+                classification = normalize_classification(classification)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
         source = source_key.strip() or f"upload/{filename.lower()}"
         request_id = request_id_context.get()
         try:

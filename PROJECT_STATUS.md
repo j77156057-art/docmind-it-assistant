@@ -9,6 +9,7 @@
 - Markdown、TXT、PDF、DOCX 版本化导入和全文 + 向量混合检索。
 - OIDC Bearer Token 校验、`viewer/auditor/admin` RBAC 和匿名化主体隔离。
 - 用户、组、角色级文档 ACL，并在召回前执行过滤。
+- 文档密级（`public/internal/confidential`）参与授权：与 ACL 构成"与"条件，只收紧不放大；机密需 `document.read.confidential`（等级 ≥ auditor），未知密级失败关闭，导入只能提升密级不能降低。
 - 管理后台文档导入、ACL 编辑、审计、健康状态和运行时模型切换。
 - DOCX、PDF、PPTX、XLSX 结构化生成、回读验证和受控下载。
 - 模型重试、Token/费用账本、动态模型路由和密钥脱敏。
@@ -55,7 +56,7 @@ node --check web/admin.js
 先设置 `IT_DATABASE_URL=sqlite:///data/queries.db`，或直接用 `.\scripts\dev.ps1 start`
 （它会覆盖为项目内 SQLite 并自动执行迁移，同时启动查询、管理与 Worker 三个进程）。
 
-当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验。
+当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验。
 
 ## 后续工作
 

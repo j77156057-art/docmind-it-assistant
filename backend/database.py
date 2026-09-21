@@ -24,6 +24,10 @@ from .db_models import (
     RuntimeModelConfigRecord, RuntimeProviderCredentialRecord,
 )
 from cryptography.fernet import Fernet, InvalidToken
+from .auth import (
+    CLASSIFICATION_RANK, CONFIDENTIAL, INTERNAL, OPEN_CLASSIFICATIONS, is_open_classification,
+    normalize_classification,
+)
 from .pricing import cost_cny, pricing_status
 from .text_index import lexical_text, lexical_terms
 
@@ -282,6 +286,11 @@ class QueryDatabase:
         normalized_scope = str(access_scope).strip().lower() if access_scope is not None else None
         if normalized_scope is not None and normalized_scope not in {"public", "restricted"}:
             raise ValueError("文档访问范围无效")
+        # Rejected at the boundary so only recognised labels ever reach the database; an
+        # unrecognised label would otherwise sit in a row and have to fail closed at read time.
+        normalized_classification = (
+            normalize_classification(classification) if classification is not None else None
+        )
         now = datetime.now(timezone.utc)
         with self._sessions.begin() as session:
             document = session.scalar(select(DocumentRecord).where(
@@ -291,7 +300,7 @@ class QueryDatabase:
                 document = DocumentRecord(
                     source_key=source_key[:512], title=title[:512], mime_type=mime_type,
                     access_scope=normalized_scope or "public",
-                    classification=(classification or "internal")[:32],
+                    classification=normalized_classification or INTERNAL,
                     created_at=now, updated_at=now,
                 )
                 session.add(document)
@@ -307,8 +316,20 @@ class QueryDatabase:
                     )
                 document.title = title[:512]
                 document.mime_type = mime_type
-                if classification is not None:
-                    document.classification = classification[:32]
+                if normalized_classification is not None:
+                    # Classification gates reads, so lowering it through an import would be a
+                    # privilege-escalation path — the same shape as the access_scope guard above.
+                    # Raising it (getting stricter) stays allowed; an unrecognised value already
+                    # in the row is treated as the strictest possible, so this never opens a row.
+                    current = CLASSIFICATION_RANK.get(
+                        str(document.classification or "").strip().lower(), CLASSIFICATION_RANK[CONFIDENTIAL],
+                    )
+                    if CLASSIFICATION_RANK[normalized_classification] < current:
+                        raise GovernanceError(
+                            "classification_cannot_be_lowered",
+                            "已存在文档的密级只能提升，不能通过导入降低",
+                        )
+                    document.classification = normalized_classification
                 document.updated_at = now
             existing = session.scalar(select(DocumentVersionRecord).where(
                 DocumentVersionRecord.document_id == document.id,
@@ -1354,9 +1375,14 @@ class QueryDatabase:
             return bool(session.scalar(statement))
 
     def accessible_document_outline(self, *, subject_id: str = "legacy", roles=(), groups=(),
-                                    max_documents: int = 20,
-                                    max_sections: int = 8) -> list[dict]:
-        """Return an ACL-filtered outline without exposing document contents."""
+                                    max_documents: int = 20, max_sections: int = 8,
+                                    allow_confidential: bool = False) -> list[dict]:
+        """Return an ACL-filtered outline without exposing document contents.
+
+        Titles and headings are withheld for classifications the caller cannot read: a
+        confidential document's title alone can be sensitive, and this path feeds the
+        assistant's overview answer.
+        """
         normalized_roles = {str(item).strip().lower() for item in roles if str(item).strip()}
         normalized_groups = {str(item).strip().lower() for item in groups if str(item).strip()}
         acl_matches = [and_(
@@ -1380,6 +1406,8 @@ class QueryDatabase:
                 or_(*acl_matches),
             ).exists(),
         )
+        if not allow_confidential:
+            allowed = and_(allowed, DocumentRecord.classification.in_(sorted(OPEN_CLASSIFICATIONS)))
         document_statement = (
             select(DocumentRecord, DocumentVersionRecord)
             .join(DocumentVersionRecord, DocumentVersionRecord.document_id == DocumentRecord.id)
@@ -1420,14 +1448,19 @@ class QueryDatabase:
             })
         return result
 
-    def hybrid_search(self, query: str, embedding: list[float], limit: int = 5,
-                      *, subject_id: str = "legacy", roles=(), groups=()) -> list[dict]:
+    def hybrid_search(self, query: str, embedding: list[float], limit: int = 5, *,
+                      subject_id: str = "legacy", roles=(), groups=(),
+                      allow_confidential: bool = False) -> list[dict]:
         if self.backend == "postgresql":
-            return self._postgres_hybrid_search(query, embedding, limit, subject_id, roles, groups)
-        return self._portable_hybrid_search(query, embedding, limit, subject_id, roles, groups)
+            return self._postgres_hybrid_search(
+                query, embedding, limit, subject_id, roles, groups, allow_confidential,
+            )
+        return self._portable_hybrid_search(
+            query, embedding, limit, subject_id, roles, groups, allow_confidential,
+        )
 
     def lexical_search(self, query: str, limit: int = 5, *, subject_id: str = "legacy",
-                       roles=(), groups=()) -> list[dict]:
+                       roles=(), groups=(), allow_confidential: bool = False) -> list[dict]:
         if self.backend == "postgresql":
             statement = text("""
                 SELECT c.id, d.title, d.source_key, v.version, c.ordinal, c.heading, c.page_number,
@@ -1446,6 +1479,8 @@ class QueryDatabase:
                       OR (a.principal_type = 'group' AND a.principal_id = ANY(string_to_array(:acl_groups, ',')))
                     )
                   ))
+                  AND (d.classification = ANY(string_to_array(:open_classifications, ','))
+                       OR :allow_confidential)
                   AND c.search_vector @@ websearch_to_tsquery('simple', :query)
                 ORDER BY score DESC LIMIT :result_limit
             """)
@@ -1454,15 +1489,19 @@ class QueryDatabase:
                     "query": self._postgres_websearch_query(query), "result_limit": limit,
                     "subject_id": subject_id, "acl_roles": ",".join(roles),
                     "acl_groups": ",".join(groups),
+                    "open_classifications": ",".join(sorted(OPEN_CLASSIFICATIONS)),
+                    "allow_confidential": allow_confidential,
                 }).mappings().all()]
         results = self._portable_hybrid_search(
             query, [0.0] * 1024, max(limit * 4, 20), subject_id, roles, groups,
+            allow_confidential,
         )
         lexical = [item for item in results if item.get("lexical_rank") is not None]
         return sorted(lexical, key=lambda item: item["lexical_rank"])[:limit]
 
     def _postgres_hybrid_search(self, query: str, embedding: list[float], limit: int,
-                                subject_id: str, roles, groups) -> list[dict]:
+                                subject_id: str, roles, groups,
+                                allow_confidential: bool = False) -> list[dict]:
         statement = text("""
             WITH eligible AS (
                 SELECT c.*, d.title, d.source_key, v.version
@@ -1478,6 +1517,8 @@ class QueryDatabase:
                       OR (a.principal_type = 'group' AND a.principal_id = ANY(string_to_array(:acl_groups, ',')))
                     )
                   ))
+                  AND (d.classification = ANY(string_to_array(:open_classifications, ','))
+                       OR :allow_confidential)
             ), lexical AS (
                 SELECT id, row_number() OVER (ORDER BY lexical_score DESC) AS lexical_rank
                 FROM (
@@ -1522,11 +1563,14 @@ class QueryDatabase:
                 "result_limit": limit,
                 "subject_id": subject_id, "acl_roles": ",".join(roles),
                 "acl_groups": ",".join(groups),
+                "open_classifications": ",".join(sorted(OPEN_CLASSIFICATIONS)),
+                "allow_confidential": allow_confidential,
             }).mappings().all()
         return [dict(row) for row in rows]
 
     def _portable_hybrid_search(self, query: str, embedding: list[float], limit: int,
-                                subject_id: str = "legacy", roles=(), groups=()) -> list[dict]:
+                                subject_id: str = "legacy", roles=(), groups=(),
+                                allow_confidential: bool = False) -> list[dict]:
         statement = (
             select(DocumentChunkRecord, DocumentRecord, DocumentVersionRecord.version)
             .join(DocumentVersionRecord, DocumentVersionRecord.id == DocumentChunkRecord.document_version_id)
@@ -1550,6 +1594,7 @@ class QueryDatabase:
         groups = {str(item).lower() for item in groups}
         rows = [row for row in rows if self._document_allowed(
             row[1], subject_id, roles, groups, acl_by_document.get(row[1].id, set()),
+            allow_confidential,
         )]
         if not rows:
             return []
@@ -1605,7 +1650,12 @@ class QueryDatabase:
         return sorted(results, key=lambda item: item["score"], reverse=True)[:limit]
 
     @staticmethod
-    def _document_allowed(document, subject_id: str, roles, groups, entries) -> bool:
+    def _document_allowed(document, subject_id: str, roles, groups, entries,
+                          allow_confidential: bool = False) -> bool:
+        # Classification narrows access before the ACL is even consulted, so a document marked
+        # public but classified confidential still stays out of reach of a low-clearance caller.
+        if not allow_confidential and not is_open_classification(document.classification):
+            return False
         if document.access_scope == "public":
             return True
         return (
