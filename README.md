@@ -93,7 +93,11 @@ docker compose ps
 docker compose down
 ```
 
+Worker 与管理服务共享 `docmind_sources` 卷（否则 Worker 读不到上传的原文件，会以 `source_missing` 失败），
+并把 checkpoint 放在独立的 `docmind_worker` 卷上，容器重建后仍可断点续跑。管理服务在该编排里固定
 `IT_INGESTION_WORKER_ENABLED=true`：**启用异步导入就必须同时运行 Worker**，否则任务只会排队，
+`/health/ready` 的 `ingestion.stalled` 会一直为真。Worker 刻意不配 healthcheck——它没有 HTTP 端点，
+而"队列不消费"是诊断信息，重启容器解决不了。
 
 该 Compose 文件用于本地演示，使用开发认证和示例数据库密码，不是生产部署清单。
 

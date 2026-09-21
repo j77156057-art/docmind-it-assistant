@@ -20,6 +20,7 @@ $Services = @(
     [pscustomobject]@{
         Name = "query"
         Label = "Query service"
+        Kind = "http"
         App = "app:app"
         Port = 8020
         Url = "http://127.0.0.1:8020/"
@@ -28,12 +29,36 @@ $Services = @(
     [pscustomobject]@{
         Name = "admin"
         Label = "Admin console"
+        Kind = "http"
         App = "admin_app:app"
         Port = 8021
         Url = "http://127.0.0.1:8021/"
         Health = "http://127.0.0.1:8021/health/ready"
+    },
+    [pscustomobject]@{
+        # Consumes the ingestion queue created by the admin console. It serves no HTTP endpoint, so
+        # readiness means "the process is alive" rather than "a port answers".
+        Name = "worker"
+        Label = "Indexing worker"
+        Kind = "process"
+        App = "worker"
+        Port = $null
+        Url = ""
+        Health = ""
     }
 )
+
+function Get-ServiceArguments($Service) {
+    if ($Service.Kind -eq "process") {
+        # Engine stays `simple`: the worker extras in requirements-worker.txt are optional.
+        return @("-B", "-m", "worker", "--poll-seconds", "2")
+    }
+    return @(
+        "-B", "-m", "uvicorn", $Service.App,
+        "--host", "127.0.0.1", "--port", [string]$Service.Port,
+        "--no-access-log"
+    )
+}
 
 function Write-Step([string]$Message) {
     Write-Host "[DocMind] $Message" -ForegroundColor Cyan
@@ -62,7 +87,12 @@ function Get-ManagedProcess($Service) {
 
     try {
         $State = Get-Content -LiteralPath $PidFile -Raw | ConvertFrom-Json
-        if ($State.App -ne $Service.App -or [int]$State.Port -ne $Service.Port) {
+        # Port is $null for services that serve no HTTP endpoint (the worker). Comparing
+        # [int]$State.Port -ne $Service.Port would be 0 -ne $null, which is true in PowerShell and
+        # would make the worker look foreign — and then never be stopped.
+        $ExpectedPort = if ($null -eq $Service.Port) { 0 } else { [int]$Service.Port }
+        $ActualPort = if ($null -eq $State.Port) { 0 } else { [int]$State.Port }
+        if ($State.App -ne $Service.App -or $ActualPort -ne $ExpectedPort) {
             throw "service identity mismatch"
         }
         $Process = Get-Process -Id ([int]$State.Pid) -ErrorAction Stop
@@ -108,6 +138,16 @@ function Wait-ForHealth($Service, [int]$Attempts = 30) {
     return $false
 }
 
+function Wait-ForProcess($Service, $Process, [int]$Attempts = 8) {
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        if ($Process.HasExited) {
+            return $false
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return -not $Process.HasExited
+}
+
 function Ensure-Environment {
     if (-not (Test-Path -LiteralPath $Python)) {
         Write-Step "Creating the project virtual environment"
@@ -142,6 +182,12 @@ function Ensure-Environment {
         $env:IT_ENVIRONMENT = "development"
         Write-Step "Using the project-local SQLite database"
     }
+
+    # This script always starts the worker, so the admin console must enqueue instead of indexing
+    # in-request; otherwise the worker would idle and imports would stay synchronous.
+    # The process environment wins over .env, which is why this override is explicit here.
+    $env:IT_INGESTION_WORKER_ENABLED = "true"
+    Write-Step "Async indexing enabled (admin enqueues, started worker consumes)"
 }
 
 function Start-DocMind {
@@ -161,27 +207,46 @@ function Start-DocMind {
     }
 
     foreach ($Service in $Services) {
-        $ExistingProcessId = Get-ListeningProcessId $Service.Port
-        if ($null -ne $ExistingProcessId) {
-            Write-Host "$($Service.Label) is already running: $($Service.Url) (PID $ExistingProcessId)"
-            continue
+        if ($Service.Kind -eq "http") {
+            $ExistingProcessId = Get-ListeningProcessId $Service.Port
+            if ($null -ne $ExistingProcessId) {
+                Write-Host "$($Service.Label) is already running: $($Service.Url) (PID $ExistingProcessId)"
+                continue
+            }
+        }
+        else {
+            $ExistingProcess = Get-ManagedProcess $Service
+            if ($null -ne $ExistingProcess) {
+                Write-Host "$($Service.Label) is already running (PID $($ExistingProcess.Id))"
+                continue
+            }
         }
 
         $StandardOutput = Join-Path $LogDirectory "$($Service.Name).out.log"
         $StandardError = Join-Path $LogDirectory "$($Service.Name).err.log"
-        $Arguments = @(
-            "-B", "-m", "uvicorn", $Service.App,
-            "--host", "127.0.0.1", "--port", [string]$Service.Port,
-            "--no-access-log"
-        )
+        $Arguments = Get-ServiceArguments $Service
         $Process = Start-Process -FilePath $Python -ArgumentList $Arguments `
             -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $StandardOutput -RedirectStandardError $StandardError
         Write-Step "Starting $($Service.Label)"
+        $Service | Add-Member -NotePropertyName Process -NotePropertyValue $Process -Force
     }
 
     $Failed = @()
     foreach ($Service in $Services) {
+        if ($Service.Kind -eq "process") {
+            $Process = $Service.Process
+            if ($null -ne $Process -and (Wait-ForProcess $Service $Process)) {
+                Write-PidFile $Service $Process
+                Write-Host "$($Service.Label): running (PID $($Process.Id))" -ForegroundColor Green
+            }
+            else {
+                $Failed += $Service
+                Write-Warning "$($Service.Label) failed to start. See data\logs\$($Service.Name).err.log"
+            }
+            continue
+        }
+
         if (Wait-ForHealth $Service) {
             $ListeningProcessId = Get-ListeningProcessId $Service.Port
             $ListeningProcess = Get-Process -Id $ListeningProcessId -ErrorAction Stop
@@ -199,8 +264,9 @@ function Start-DocMind {
     }
 
     if ($Open) {
-        Start-Process $Services[0].Url
-        Start-Process $Services[1].Url
+        foreach ($Service in $Services | Where-Object { $_.Kind -eq "http" }) {
+            Start-Process $Service.Url
+        }
     }
 }
 
@@ -208,7 +274,12 @@ function Stop-DocMind {
     foreach ($Service in $Services) {
         $PidFile = Get-PidFile $Service
         if (-not (Test-Path -LiteralPath $PidFile)) {
-            $ExistingProcessId = Get-ListeningProcessId $Service.Port
+            $ExistingProcessId = if ($Service.Kind -eq "http") {
+                Get-ListeningProcessId $Service.Port
+            }
+            else {
+                $null
+            }
             if ($null -ne $ExistingProcessId) {
                 Write-Warning "$($Service.Label) is running but was not started by this script. Stop it in its original terminal with Ctrl+C."
             }
@@ -230,6 +301,18 @@ function Stop-DocMind {
 
 function Show-Status {
     foreach ($Service in $Services) {
+        if ($Service.Kind -eq "process") {
+            $WorkerProcess = Get-ManagedProcess $Service
+            [pscustomobject]@{
+                Service = $Service.Label
+                Status = if ($null -ne $WorkerProcess) { "running" } else { "stopped" }
+                Port = $null
+                PID = if ($null -ne $WorkerProcess) { $WorkerProcess.Id } else { $null }
+                Url = "-"
+            }
+            continue
+        }
+
         $ProcessId = Get-ListeningProcessId $Service.Port
         $Ready = $null -ne $ProcessId -and (Test-Health $Service.Health)
         [pscustomobject]@{

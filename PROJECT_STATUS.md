@@ -16,6 +16,7 @@
 - 异步索引：`ingestion_jobs` 业务队列、`worker` 进程（抢占、心跳、僵尸回收、可重试性分类）、导入接口 `202 + job_id`、任务重试/取消、队列健康诊断。
 - 可选 LangGraph 编排引擎：分批向量化 + checkpoint 断点续跑、独立 checkpoint 存储（不污染应用 schema）、从 `app.py` 出发的 import 闭包边界守卫。
 - 发布前评测门：`evaluation_cases` / `evaluation_runs` / `evaluation_case_results`，复用生产检索路径的 recall@k、引用命中率、拒答正确率与基线回归，`off/warn/block` 三种门禁模式与 `override_gate` 留痕。
+- 部署编排包含索引 Worker：`scripts/dev.ps1` 启停三个服务（查询/管理/Worker），`compose.yaml` 增加 `worker` 服务并在管理服务与管理端共享 `docmind_sources` 卷、独立 `docmind_worker` 卷保存 checkpoint。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 

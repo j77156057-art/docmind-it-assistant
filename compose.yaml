@@ -51,12 +51,19 @@ services:
 
   admin:
     build: .
-    environment: *application-environment
+    environment:
+      <<: *application-environment
+      # Import returns 202 + job_id and the worker below does the indexing. Keep this in step with
+      # the worker service: enabling it without a running worker leaves jobs queued forever, which
+      # /health/ready reports as ingestion.stalled.
+      IT_INGESTION_WORKER_ENABLED: "true"
     command: ["python", "-B", "-m", "uvicorn", "admin_app:app", "--host", "0.0.0.0", "--port", "8021", "--no-access-log"]
     ports:
       - "127.0.0.1:8021:8021"
     volumes:
       - docmind_artifacts:/app/data/artifacts
+      # Shared with the worker: it can only index an upload it can read.
+      - docmind_sources:/app/data/sources
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -68,6 +75,30 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  worker:
+    build: .
+    environment:
+      <<: *application-environment
+      IT_INGESTION_WORKER_ENABLED: "true"
+      # Durable resume state. Mounted on its own volume so a recreated container does not lose the
+      # checkpoints it would use to avoid re-embedding finished batches.
+      IT_INGESTION_CHECKPOINT_PATH: /app/data/worker/checkpoints.db
+    command: ["python", "-B", "-m", "worker", "--poll-seconds", "2"]
+    volumes:
+      - docmind_sources:/app/data/sources
+      - docmind_worker:/app/data/worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # No healthcheck on purpose: the worker serves no HTTP endpoint, and "the queue is not draining"
+    # is a diagnostic (exposed as ingestion.stalled by the admin /health/ready), not a liveness
+    # failure — restarting the container cannot fix a missing worker.
+    restart: unless-stopped
+
 volumes:
   docmind_it_postgres:
   docmind_artifacts:
+  docmind_sources:
+  docmind_worker:
