@@ -154,6 +154,9 @@ class PostgresCheckpointTests(unittest.TestCase):
             governance_mode="direct",
             ingestion_worker_enabled=True,
             ingestion_engine=engine,
+            # Retry backoff is exercised in test_ingestion_backoff; checkpoint-resume tests need
+            # the requeued job to be claimable immediately, so disable the delay here.
+            ingestion_backoff_max_seconds=0,
         )
 
     def worker_with_client(self, settings: AppSettings, client: EmbeddingClient):
