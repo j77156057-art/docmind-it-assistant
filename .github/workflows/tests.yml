@@ -18,9 +18,13 @@ jobs:
     # The worker's LangGraph checkpointer behaves differently on PostgreSQL than on SQLite
     # (separate schema, psycopg connection). tests/test_indexing_graph_postgres.py exercises
     # that path and skips itself when IT_TEST_POSTGRES_URL is absent.
+    #
+    # The image must carry pgvector: migration 0003 runs `CREATE EXTENSION IF NOT EXISTS vector`,
+    # so a plain `postgres` image fails with "extension vector is not available". This mirrors
+    # compose.yaml, which already uses the pgvector image for the same reason.
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg17
         env:
           POSTGRES_USER: docmind
           POSTGRES_PASSWORD: change-me
