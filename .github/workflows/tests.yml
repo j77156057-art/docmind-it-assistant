@@ -30,7 +30,7 @@ jobs:
         run: python -B -m unittest discover -s tests -v
       - name: Check Python and JavaScript syntax
         run: |
-          python -m compileall -q app.py admin_app.py assistant backend ingestion migrations tests
+          python -m compileall -q app.py admin_app.py assistant backend ingestion migrations tests worker
           node --check web/admin.js
       - name: Check dependency consistency
         run: python -m pip check

@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import uuid
 
-from backend import AppSettings, QueryDatabase
+from backend import AppSettings, GovernanceError, QueryDatabase
 from backend.embeddings import build_embedding_client
 
 from .service import DocumentIngestionService
@@ -42,11 +43,18 @@ def main() -> int:
                 chunk_overlap_chars=settings.chunk_overlap_chars,
                 max_characters=settings.document_max_characters,
                 max_pages=settings.document_max_pages,
+                require_review=settings.governance_mode == "review",
             )
-            result = {"ok": True, **service.import_file(
-                args.path, title=args.title, source_key=args.source_key,
-                access_scope=args.access_scope, classification=args.classification,
-            )}
+            try:
+                result = {"ok": True, **service.import_file(
+                    args.path, title=args.title, source_key=args.source_key,
+                    access_scope=args.access_scope, classification=args.classification,
+                    submitted_by_subject_id="cli", request_id=f"cli-{uuid.uuid4().hex}",
+                )}
+            except GovernanceError as exc:
+                print(json.dumps({"ok": False, "error": str(exc), "code": exc.code},
+                                 ensure_ascii=False, indent=2))
+                return 1
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     finally:

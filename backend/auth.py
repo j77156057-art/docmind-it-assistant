@@ -13,6 +13,42 @@ from jwt import InvalidTokenError, PyJWKClient
 
 
 ROLE_LEVELS = {"viewer": 1, "auditor": 2, "admin": 3}
+
+# Knowledge-governance roles are deliberately NOT levels. Making review or publish a higher
+# level than admin would let one role inherit the other's duties, which makes separation of
+# duties impossible to enforce. They grant capabilities instead.
+GOVERNANCE_ROLES = frozenset({
+    "knowledge_editor", "knowledge_reviewer", "knowledge_publisher", "evaluation_runner",
+})
+KNOWN_ROLES = frozenset(ROLE_LEVELS) | GOVERNANCE_ROLES
+
+# Capabilities granted by role level. Every entry is an explicit minimum level.
+LEVEL_CAPABILITIES = {
+    "query.read": 1,
+    "history.self.read": 1,
+    "document.read": 2,
+    "audit.read": 2,
+    "usage.read": 2,
+    "artifact.read": 2,
+    "document.write": 3,
+    "acl.write": 3,
+    "model.write": 3,
+    "artifact.write": 3,
+    "governance.override": 3,
+}
+
+# Capabilities granted by an explicit governance role, independent of level.
+# `admin` intentionally does NOT gain document.review/document.publish:
+# it may only act through the audited override switch.
+ROLE_CAPABILITIES = {
+    "knowledge_editor": frozenset({"document.read", "document.write"}),
+    "knowledge_reviewer": frozenset({"document.read", "document.review", "evaluation.run"}),
+    "knowledge_publisher": frozenset({
+        "document.read", "document.publish", "document.withdraw", "document.rollback",
+    }),
+    "evaluation_runner": frozenset({"document.read", "evaluation.run"}),
+}
+
 SESSION_COOKIE = "docmind_session"
 
 
@@ -34,10 +70,25 @@ class Principal:
         return any(ROLE_LEVELS.get(role, 0) >= required for role in self.roles)
 
     @property
+    def capabilities(self) -> frozenset[str]:
+        granted = {
+            capability
+            for capability, level in LEVEL_CAPABILITIES.items()
+            if any(ROLE_LEVELS.get(role, 0) >= level for role in self.roles)
+        }
+        for role in self.roles:
+            granted |= ROLE_CAPABILITIES.get(role, frozenset())
+        return frozenset(granted)
+
+    def has_capability(self, capability: str) -> bool:
+        return capability in self.capabilities
+
+    @property
     def acl_roles(self) -> tuple[str, ...]:
         if "guest" in self.groups:
             return ()
-        implied = set(self.roles)
+        # Governance roles never widen document visibility: only level roles are ACL subjects.
+        implied = {role for role in self.roles if role in ROLE_LEVELS}
         if "admin" in implied:
             implied.update({"auditor", "viewer"})
         elif "auditor" in implied:
@@ -99,6 +150,7 @@ class OIDCAuthenticator:
                  key_resolver: Callable[[str], object] | None = None,
                  local_username: str = "admin", local_password_hash: str = "",
                  local_display_name: str = "本地管理员", local_session_hours: int = 12,
+                 local_roles: tuple[str, ...] = ("admin", "auditor", "viewer"),
                  guest_session_hours: int = 2):
         self.mode = mode
         self.issuer = issuer.rstrip("/")
@@ -114,6 +166,11 @@ class OIDCAuthenticator:
         self.local_username = local_username.strip()
         self.local_password_hash = local_password_hash.strip()
         self.local_display_name = local_display_name.strip()[:128]
+        normalized_local_roles = tuple(
+            role for role in (str(item).strip().lower() for item in local_roles)
+            if role in KNOWN_ROLES
+        )
+        self.local_roles = normalized_local_roles or ("viewer",)
         self.local_session_hours = max(1, min(local_session_hours, 168))
         self.guest_session_hours = max(1, min(guest_session_hours, 24))
 
@@ -134,7 +191,7 @@ class OIDCAuthenticator:
 
     def authenticate(self, headers: Mapping[str, str]) -> Principal:
         if self.mode == "development":
-            return self._principal("local-development", {"viewer", "auditor", "admin"}, {"local"})
+            return self._principal("local-development", KNOWN_ROLES, {"local"})
         if self.mode == "trusted_headers":
             subject = headers.get("x-auth-subject", "").strip()
             roles = _claim_values({"roles": headers.get("x-auth-roles", "")}, "roles")
@@ -164,7 +221,7 @@ class OIDCAuthenticator:
         signing_key = hashlib.sha256(self.subject_salt.encode("utf-8")).digest()
         return jwt.encode({
             "sub": username.strip(), "name": self.local_display_name,
-            "roles": ["admin", "auditor", "viewer"], "groups": ["local"],
+            "roles": list(self.local_roles), "groups": ["local"],
             "iat": now, "exp": now + self.local_session_hours * 3600,
         }, signing_key, algorithm="HS256")
 
@@ -221,7 +278,9 @@ class OIDCAuthenticator:
         return self._principal(str(claims["sub"]), roles, groups, name)
 
     def _principal(self, subject: str, roles, groups, display_name: str = "") -> Principal:
-        normalized_roles = frozenset(str(role).strip().lower() for role in roles) & ROLE_LEVELS.keys()
+        normalized_roles = frozenset(
+            str(role).strip().lower() for role in roles
+        ) & KNOWN_ROLES
         normalized_groups = frozenset(
             str(group).strip().lower() for group in groups if str(group).strip()
         )

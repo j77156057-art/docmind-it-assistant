@@ -10,7 +10,13 @@ from .config import AppSettings
 
 
 request_id_context: ContextVar[str] = ContextVar("it_request_id", default="-")
+# Log fields are an allowlist, not a passthrough: a caller must not be able to leak content into
+# the logs just by passing an extra keyword. Every entry below is an identifier, an enum, a
+# counter or a boolean — never free-form text. Anything else is dropped silently, so operational
+# code that needs a field must add it here deliberately (and content-carrying keys such as a
+# question, an answer or a document body must never be added).
 _EXTRA_FIELDS = (
+    # HTTP request boundary
     "event", "method", "path", "status_code", "duration_ms", "component",
     "reason", "environment", "provider", "model", "error_type",
 )

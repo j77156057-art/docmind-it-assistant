@@ -23,7 +23,38 @@
 .venv\Scripts\python -m ingestion.cli list
 ```
 
-`source-key` 是稳定文档身份。同一身份和相同 SHA-256 不重复建索引；内容变化生成新版本。只有向量化和分块全部成功后新版本才变为 `indexed`，此前版本随后标记为 `superseded`。失败版本保留错误码，下一次同内容导入可以重试。
+`source-key` 是稳定文档身份。同一身份和相同 SHA-256 不重复建索引；内容变化生成新版本。版本状态依次为 `queued → processing → staged → indexed`，**只有 `indexed` 参与召回**；失败版本保留错误码，下一次同内容导入可以重试。
+
+## 知识治理（审批发布）
+
+默认 `IT_GOVERNANCE_MODE=direct`：索引完成即发布，行为与历史版本一致。切换为 `review` 后：
+
+1. 导入完成后版本停在 `staged`，其分块已入库但**任何召回路径都取不到**；
+2. `knowledge_reviewer` 通过 `POST /api/admin/documents/{id}/versions/{v}/review` 通过或驳回（驳回必须填写意见）；
+3. 通过只代表"授权发布"，不会自动上线；`knowledge_publisher` 再调用 `POST .../publish` 才把状态改为 `indexed`，同时把上一个已发布版本标记为 `superseded`；
+4. `POST .../withdraw` 需要填写原因，版本立即退出检索，但原文件、分块与审批记录都保留；`POST .../rollback` 可把历史版本重新置为已发布，且**不重新向量化**。
+
+治理动作的全部留痕在 `document_version_reviews`（只插入、不更新），与安全审计 `audit_events` 分开：前者回答"这一版为什么能上线"，后者回答"谁在什么时候动了什么"。
+
+关键约束：
+
+- `admin` **不自动拥有**审核与发布能力。小团队可设置 `IT_GOVERNANCE_ALLOW_ADMIN_OVERRIDE=true` 并显式勾选越权开关，动作会带 `is_override` 标记。
+- 默认强制职责分离（提交人不能审核自己提交的版本），可用 `IT_GOVERNANCE_REQUIRE_SEPARATION_OF_DUTIES` 关闭。
+- 治理角色不会进入 ACL 解析，因此授予审核角色**不会**顺带扩大该用户的文档可见范围。
+- 导入接口不能修改已存在文档的 `access_scope`；越权修改会被拒绝（`403`），范围调整只能走 ACL 接口。
+
+CLI 导入同样尊重 `IT_GOVERNANCE_MODE`：`review` 模式下命令执行完只到 `staged`，`--access-scope` 与既有文档不一致时会直接报错退出。
+
+## 异步索引（Worker）
+
+运维要点：
+
+| 现象 | 位置 | 处理 |
+|---|---|---|
+| 任务长期停留在 `queued` | `/api/admin/ingestion/jobs`、`/health/ready` 的 `ingestion.stale` | Worker 未运行或已退出；启动 Worker 后会自动消费 |
+| `job_type_unsupported` | 任务视图 | 该任务类型尚未实现（当前仅 `import`） |
+
+`ingestion/cli.py` 的同步导入始终保留：Worker 子系统不可用时，管理员仍可导入知识，这是刻意保留的降级通道。
 
 ## Embedding 配置
 
@@ -53,3 +84,5 @@ PostgreSQL 使用 `tsvector`/GIN 全文索引和 pgvector/HNSW 余弦索引，�
 ```
 
 降级 `20260920_0003` 会删除文档索引和导入产生的 Embedding 用量记录。执行前必须备份，且不应在生产高峰期直接降级。
+
+降级 `20260921_0008` 会删除 `document_version_reviews`（审批证据链）与治理列，并把新状态归一为旧词汇：`queued`/`processing`/`staged` → `pending`，`rejected` → `failed`，`withdrawn` → `superseded`。**不会**把未审核内容映射为 `indexed`，避免降级动作本身把草稿推上线。执行前必须备份审批记录。

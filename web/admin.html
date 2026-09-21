@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>DocMind 管理控制台</title>
-  <link rel="stylesheet" href="/assets/admin.css?v=20260920-2">
+  <link rel="stylesheet" href="/assets/admin.css?v=20260921-1">
 </head>
 <body>
   <svg class="icon-sprite" aria-hidden="true">
@@ -37,6 +37,8 @@
       </div>
       <nav class="nav" aria-label="管理导航">
         <button class="nav-item active" data-view="documents"><svg><use href="#i-file"/></svg><span>文档库</span></button>
+        <button class="nav-item" data-view="governance" id="governanceNav" hidden><svg><use href="#i-shield"/></svg><span>知识治理</span></button>
+        <button class="nav-item" data-view="jobs" id="jobsNav" hidden><svg><use href="#i-activity"/></svg><span>导入任务</span></button>
         <button class="nav-item" data-view="artifacts"><svg><use href="#i-sparkles"/></svg><span>文档生成</span></button>
         <button class="nav-item" data-view="audit"><svg><use href="#i-audit"/></svg><span>审计记录</span></button>
         <button class="nav-item" data-view="system"><svg><use href="#i-activity"/></svg><span>系统状态</span></button>
@@ -107,6 +109,11 @@
               <a class="secondary-button" id="downloadSource"><svg><use href="#i-download"/></svg>下载</a>
               <span id="sourceUnavailable" hidden>该历史版本未保留原文件</span>
             </div>
+            <div class="governance-block" id="governanceBlock">
+              <div class="acl-heading"><label>版本治理</label><span class="status-pill" id="governanceModeInline">-</span></div>
+              <div class="version-list" id="versionList"></div>
+              <div class="acl-empty" id="versionEmpty" hidden>没有可治理的版本</div>
+            </div>
             <form id="aclForm">
               <fieldset>
                 <legend>访问范围</legend>
@@ -153,8 +160,71 @@
         </div>
       </section>
 
-      <section class="view" id="view-audit">
-        <div class="section-bar"><div><strong>最近操作</strong><span id="auditCount">0 条</span></div><label class="filter-field"><span class="sr-only">结果</span><select id="auditFilter"><option value="all">全部结果</option><option value="success">成功</option><option value="failed">失败</option></select></label></div>
+      <section class="view" id="view-governance">
+        <div class="section-bar">
+          <div><strong>待审版本</strong><span id="governanceCount">0 个</span></div>
+          <span class="status-pill" id="governanceMode">-</span>
+        </div>
+        <div class="table-region">
+          <table class="data-table">
+            <thead><tr><th>文档</th><th>版本</th><th>提交人</th><th>提交时间</th><th>知识块</th><th><span class="sr-only">操作</span></th></tr></thead>
+            <tbody id="governanceRows"></tbody>
+          </table>
+          <div class="empty-state" id="governanceEmpty" hidden><svg><use href="#i-shield"/></svg><strong>没有待审核版本</strong></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-jobs">
+        <div class="metrics job-metrics" aria-label="索引队列概览">
+          <div class="metric"><span>待处理</span><strong id="metricQueued">0</strong></div>
+          <div class="metric"><span>运行中</span><strong id="metricRunning">0</strong></div>
+          <div class="metric"><span>失败</span><strong id="metricFailedJobs">0</strong></div>
+          <div class="metric"><span>已完成</span><strong id="metricSucceeded">0</strong></div>
+        </div>
+        <div class="section-bar">
+          <div><strong>索引任务</strong><span id="jobsCount">0 条</span></div>
+          <div class="job-filters">
+            <label class="filter-field"><span class="sr-only">状态</span><select id="jobFilter"><option value="">全部状态</option><option value="queued">待处理</option><option value="running">运行中</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label>
+            <span class="status-pill" id="workerState">-</span>
+          </div>
+        </div>
+        <p class="reason-hint" id="jobsHint">导入接口会把文档排队，由 Worker 进程完成解析与向量化。</p>
+        <div class="table-region">
+          <table class="data-table">
+            <thead><tr><th>任务</th><th>文档</th><th>版本</th><th>状态</th><th>尝试</th><th>错误</th><th>更新时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+            <tbody id="jobRows"></tbody>
+          </table>
+          <div class="empty-state" id="jobsEmpty" hidden><svg><use href="#i-activity"/></svg><strong>暂无索引任务</strong></div>
+        </div>
+      </section>
+
+        <div class="section-bar">
+          <div><strong>黄金题集</strong><span id="caseCount">0 条</span></div>
+          <div class="job-filters">
+            <span class="status-pill" id="gateModePill">-</span>
+            <span class="status-pill" id="thresholdPill">-</span>
+        <div class="table-region">
+          <table class="data-table">
+            <thead><tr><th>用例</th><th>问题</th><th>期望文档</th><th>期望章节</th><th>类型</th><th>状态</th><th><span class="sr-only">操作</span></th></tr></thead>
+            <tbody id="caseRows"></tbody>
+          </table>
+          <div class="empty-state" id="casesEmpty" hidden><svg><use href="#i-audit"/></svg><strong>尚未配置黄金题</strong></div>
+        </div>
+
+        <div class="section-bar">
+          <div><strong>评测运行</strong><span id="runCount">0 条</span></div>
+        </div>
+        <div class="table-region">
+          <table class="data-table">
+            <thead><tr><th>运行</th><th>触发</th><th>门禁</th><th>recall@k</th><th>引用命中</th><th>拒答</th><th>通过/总数</th><th>时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+            <tbody id="runRows"></tbody>
+          </table>
+          <div class="empty-state" id="runsEmpty" hidden><svg><use href="#i-audit"/></svg><strong>暂无评测运行</strong></div>
+        </div>
+        <div class="run-detail" id="runDetail" hidden></div>
+      </section>
+
+      <section class="view" id="view-audit">        <div class="section-bar"><div><strong>最近操作</strong><span id="auditCount">0 条</span></div><label class="filter-field"><span class="sr-only">结果</span><select id="auditFilter"><option value="all">全部结果</option><option value="success">成功</option><option value="failed">失败</option></select></label></div>
         <div class="table-region">
           <table class="data-table audit-table"><thead><tr><th>时间</th><th>操作</th><th>目标</th><th>操作者</th><th>结果</th><th>请求 ID</th></tr></thead><tbody id="auditRows"></tbody></table>
           <div class="empty-state" id="auditEmpty" hidden><svg><use href="#i-audit"/></svg><strong>暂无审计记录</strong></div>
@@ -213,7 +283,47 @@
     </form>
   </dialog>
 
+  <dialog id="previewDialog" class="wide">
+    <div class="dialog-head">
+      <div><span class="eyebrow">版本审核</span><h2 id="previewTitle">-</h2></div>
+      <button type="button" class="icon-button" id="closePreview" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <div class="preview-body">
+      <dl class="document-meta" id="previewMeta"></dl>
+      <label class="field"><span>审核意见（驳回必填）</span><textarea id="previewComment" maxlength="1000" rows="2"></textarea></label>
+      <label class="field" id="overrideField" hidden><span><input type="checkbox" id="overrideReview"> 以越权方式执行（审核、发布与评测门放行都会写入越权标记）</span></label>
+      <div class="chunk-list" id="previewChunks"></div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="secondary-button" id="rejectVersion" hidden>驳回</button>
+      <button type="button" class="primary-button" id="approveVersion" hidden>通过审核</button>
+      <button type="button" class="primary-button" id="publishVersion" hidden>发布上线</button>
+    </div>
+  </dialog>
+
+  <dialog id="reasonDialog">
+    <div class="dialog-head">
+      <div><span class="eyebrow">治理操作</span><h2 id="reasonTitle">-</h2></div>
+      <button type="button" class="icon-button" id="closeReason" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button>
+    </div>
+    <div class="preview-body">
+      <p class="reason-hint" id="reasonHint">操作会写入不可修改的审批记录。</p>
+      <label class="field"><span>原因（必填）</span><textarea id="reasonText" maxlength="512" rows="2"></textarea></label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="secondary-button" id="cancelReason">取消</button>
+      <button type="button" class="primary-button" id="confirmReason">确认</button>
+    </div>
+  </dialog>
+
+  <dialog id="caseDialog">
+    <form method="dialog" id="caseForm">
+      <div class="dialog-head"><div><span class="eyebrow">黄金题</span><h2 id="caseDialogTitle">新增用例</h2></div><button type="button" class="icon-button" id="closeCase" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelCase">取消</button><button type="submit" class="primary-button" id="saveCase">保存用例</button></div>
+    </form>
+  </dialog>
+
   <div class="toast-region" id="toasts" aria-live="polite"></div>
-  <script src="/assets/admin.js?v=20260920-3" defer></script>
+  <script src="/assets/admin.js?v=20260921-1" defer></script>
 </body>
 </html>

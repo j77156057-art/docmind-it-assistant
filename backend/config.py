@@ -110,10 +110,14 @@ class AppSettings(BaseModel):
     chunk_max_chars: int = Field(default=1200, ge=200, le=8000)
     chunk_overlap_chars: int = Field(default=150, ge=0, le=2000)
     retrieval_top_k: int = Field(default=5, ge=1, le=20)
+    governance_mode: Literal["direct", "review"] = "direct"
+    governance_require_separation_of_duties: bool = True
+    governance_allow_admin_override: bool = False
     auth_mode: Literal["development", "trusted_headers", "oidc", "local"] = "development"
     local_username: str = "admin"
     local_password_hash: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
     local_display_name: str = "本地管理员"
+    local_roles: str = "admin,auditor,viewer"
     local_session_hours: int = Field(default=12, ge=1, le=168)
     guest_login_enabled: bool = False
     guest_session_hours: int = Field(default=2, ge=1, le=24)
@@ -255,10 +259,18 @@ class AppSettings(BaseModel):
             chunk_max_chars=int(read("IT_CHUNK_MAX_CHARS", "1200")),
             chunk_overlap_chars=int(read("IT_CHUNK_OVERLAP_CHARS", "150")),
             retrieval_top_k=int(read("IT_RETRIEVAL_TOP_K", "5")),
+            governance_mode=read("IT_GOVERNANCE_MODE", "direct").strip().lower(),
+            governance_require_separation_of_duties=_bool(
+                read("IT_GOVERNANCE_REQUIRE_SEPARATION_OF_DUTIES", "true"),
+            ),
+            governance_allow_admin_override=_bool(
+                read("IT_GOVERNANCE_ALLOW_ADMIN_OVERRIDE", "false"),
+            ),
             auth_mode=read("IT_AUTH_MODE", "development").strip().lower(),
             local_username=read("IT_LOCAL_USERNAME", "admin").strip(),
             local_password_hash=SecretStr(read("IT_LOCAL_PASSWORD_HASH", "").strip()),
             local_display_name=read("IT_LOCAL_DISPLAY_NAME", "本地管理员").strip(),
+            local_roles=read("IT_LOCAL_ROLES", "admin,auditor,viewer").strip(),
             local_session_hours=int(read("IT_LOCAL_SESSION_HOURS", "12")),
             guest_login_enabled=_bool(read("IT_GUEST_LOGIN_ENABLED", "false")),
             guest_session_hours=int(read("IT_GUEST_SESSION_HOURS", "2")),
@@ -273,6 +285,13 @@ class AppSettings(BaseModel):
             log_json=_bool(read("IT_LOG_JSON", "true")),
             configured_credentials=frozenset(credential_values),
             credentials=credential_values,
+        )
+
+    @property
+    def local_role_list(self) -> tuple[str, ...]:
+        """Local-login roles in stable order; unknown values are ignored by the authenticator."""
+        return tuple(
+            part.strip().lower() for part in self.local_roles.split(",") if part.strip()
         )
 
     def credential_is_configured(self, name: str) -> bool:
@@ -293,6 +312,9 @@ class AppSettings(BaseModel):
             "admin_host": self.admin_host,
             "admin_port": self.admin_port,
             "model_mode": self.model_mode,
+            "governance_mode": self.governance_mode,
+            "governance_require_separation_of_duties": self.governance_require_separation_of_duties,
+            "governance_allow_admin_override": self.governance_allow_admin_override,
             "auth_mode": self.auth_mode,
             "log_level": self.log_level,
             "log_json": self.log_json,

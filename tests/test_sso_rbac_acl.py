@@ -290,13 +290,22 @@ class SsoRbacAclTests(unittest.TestCase):
                     f"/api/admin/documents/{imported.json()['document_id']}/versions/1/source?download=true",
                     headers=self.headers("auditor", "auditor"),
                 )
-                scope_updated = client.post(
+                scope_rejected = client.post(
                     "/api/admin/documents/import",
                     headers=self.headers("administrator", "admin"),
                     files={"file": ("vpn.md", "## VPN\n请重新登录。".encode(), "text/markdown")},
                     data={
                         "title": "VPN 手册", "source_key": "manual/vpn",
                         "access_scope": "public", "classification": "internal",
+                    },
+                )
+                duplicate_import = client.post(
+                    "/api/admin/documents/import",
+                    headers=self.headers("administrator", "admin"),
+                    files={"file": ("vpn.md", "## VPN\n请重新登录。".encode(), "text/markdown")},
+                    data={
+                        "title": "VPN 手册", "source_key": "manual/vpn",
+                        "access_scope": "restricted", "classification": "internal",
                     },
                 )
                 updated_documents = client.get(
@@ -318,9 +327,13 @@ class SsoRbacAclTests(unittest.TestCase):
         self.assertIn("inline", source_view.headers["content-disposition"])
         self.assertIn("attachment", source_download.headers["content-disposition"])
         self.assertEqual(documents.json()["items"][0]["access_scope"], "restricted")
-        self.assertTrue(scope_updated.json()["duplicate"])
-        self.assertEqual(updated_documents.json()["items"][0]["access_scope"], "public")
+        # Import must not be a back door for widening access: the scope change is refused and the
+        # document keeps its original scope. Only the audited ACL endpoint may change it.
+        self.assertEqual(scope_rejected.status_code, 403)
+        self.assertEqual(updated_documents.json()["items"][0]["access_scope"], "restricted")
+        self.assertTrue(duplicate_import.json()["duplicate"])
         self.assertEqual(audit.json()["items"][0]["action"], "document_import")
+        self.assertIn("failed", [item["result"] for item in audit.json()["items"]])
 
     def test_admin_switches_runtime_model_and_query_service_sees_it(self):
         with tempfile.TemporaryDirectory() as root:

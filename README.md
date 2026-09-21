@@ -24,6 +24,9 @@
 - **动态模型路由**：知识库、本地模型和云模型可在管理后台切换，无需重启查询服务。
 - **可追踪成本**：记录模型每次尝试的 Token、延迟、供应商请求 ID、单价快照和费用。
 - **结构化产物**：管理端生成并验证 DOCX、PDF、PPTX、XLSX，不执行任意脚本。
+- **知识治理**：导入不再等于发布，版本有状态机、审批职责分离、作废与回滚，全程留痕。
+- **异步索引**：导入可排队（返回 `202` + 任务号），Worker 抢占执行、心跳保活、失败按可重试性分类重试。
+- **发布前评测门**：黄金题集复用生产检索路径量化 recall@k、引用命中率与拒答正确率，`block` 模式可阻断未达标发布，越权放行必须留痕。
 - **隐私日志**：日志不记录问题正文、回答正文、查询参数、会话 ID、客户端地址或密钥。
 
 ## 架构
@@ -58,6 +61,8 @@ cd docmind-it-assistant
 
 - 查询工作台：`http://127.0.0.1:8020/`
 - 管理控制台：`http://127.0.0.1:8021/`
+- 索引 Worker：无端口，随脚本一起启停（`status` 会显示 `running/stopped`）
+
 
 ```powershell
 .\scripts\dev.ps1 status
@@ -78,13 +83,14 @@ cd docmind-it-assistant
 
 ## Docker 本地环境
 
-Docker Compose 会启动 PostgreSQL/pgvector、迁移任务、查询服务和管理服务，宿主机端口仍只绑定 `127.0.0.1`：
+Docker Compose 会启动 PostgreSQL/pgvector、迁移任务、查询服务、管理服务和索引 Worker，宿主机端口仍只绑定 `127.0.0.1`：
 
 ```powershell
 docker compose up -d --build
 docker compose ps
 docker compose down
 ```
+
 
 该 Compose 文件用于本地演示，使用开发认证和示例数据库密码，不是生产部署清单。
 
@@ -116,6 +122,79 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 | `GET/POST` | `/api/admin/artifacts` | auditor/admin | 查看或生成办公产物 |
 | `GET/PUT` | `/api/admin/model-config` | auditor/admin | 查看或切换运行时模型与回答策略 |
 | `GET` | `/api/admin/audit-events` | auditor | 查看管理审计记录 |
+| `GET` | `/api/admin/governance/pending` | `document.review` | 查看待审核版本 |
+| `GET` | `/api/admin/documents/{id}/versions/{v}/preview` | `document.review` | 审核预览该版本的内容块（每次读取写审计） |
+| `POST` | `/api/admin/documents/{id}/versions/{v}/review` | `document.review` | 通过或驳回（驳回必须填写意见） |
+| `POST` | `/api/admin/documents/{id}/versions/{v}/publish` | `document.publish` | 发布已通过审核的版本 |
+| `POST` | `/api/admin/documents/{id}/versions/{v}/withdraw` | `document.withdraw` | 作废当前已发布版本（必须填写原因） |
+| `POST` | `/api/admin/documents/{id}/versions/{v}/rollback` | `document.rollback` | 回滚到历史版本（必须填写原因） |
+| `GET` | `/api/admin/documents/{id}/versions/{v}/reviews` | `document.read` | 查看该版本的审批记录 |
+| `GET` | `/api/admin/ingestion/jobs` | `document.read` | 查看索引任务与队列统计 |
+| `POST` | `/api/admin/ingestion/jobs/{id}/retry` | `document.write` | 重新排队失败或已取消的任务 |
+| `POST` | `/api/admin/ingestion/jobs/{id}/cancel` | `document.write` | 取消尚未开始的任务 |
+## 知识治理：从"导入即发布"到审批发布
+
+角色分两层：等级角色 `viewer < auditor < admin` 决定后台读取与配置权限；治理角色按**能力**授权，与等级正交，因此可以强制职责分离。
+
+| 角色 | 能力 |
+|---|---|
+| `knowledge_editor` | `document.write`（上传、发起变更） |
+| `knowledge_publisher` | `document.publish`、`document.withdraw`、`document.rollback` |
+
+`admin` 拥有导入与 ACL/模型配置能力，但**不自动拥有审核与发布能力**：单人环境需显式设置 `IT_GOVERNANCE_ALLOW_ADMIN_OVERRIDE=true`，并在操作时勾选越权开关，动作会记录 `is_override` 标记。
+
+版本状态机：
+
+```text
+queued → processing → staged → indexed → superseded
+                                   ↘ withdrawn
+              staged → rejected
+              superseded / withdrawn → indexed（回滚，不重新向量化）
+```
+
+只有 `indexed` 参与召回。`staged`、`rejected`、`withdrawn` 的分块虽然已入库，但混合检索、全文检索和知识大纲**都取不到**——这是本模块最重要的一条安全不变量，由 `tests/test_knowledge_governance.py` 直接断言。
+
+```dotenv
+IT_GOVERNANCE_MODE=review
+IT_GOVERNANCE_REQUIRE_SEPARATION_OF_DUTIES=true
+IT_GOVERNANCE_ALLOW_ADMIN_OVERRIDE=false
+IT_LOCAL_ROLES=admin,auditor,viewer
+```
+
+`IT_GOVERNANCE_MODE` 默认 `direct`（保持历史行为：索引完成即发布）；生产建议 `review`。治理角色与本地登录可授予的角色都受白名单约束：写进 OIDC claim 或 `IT_LOCAL_ROLES` 但不在白名单内的角色会被丢弃，不会生效。
+
+导入接口不能修改已存在文档的 `access_scope`：越权修改会被拒绝，访问范围只能通过 ACL 接口调整（需要 `acl.write` 并写审计）。审批动作全部记录在 `document_version_reviews`（只插入、不更新），与安全审计 `audit_events` 各司其职。
+
+治理角色都带 `document.read`：审核者必须能看到被审版本的内容，因此治理角色的**文档库读取范围等同于审计员**（含受限文档），但不会因此获得 ACL 写入、模型配置或导入权限。若企业要求"按知识域隔离审核范围"（例如只允许审核本部门文档），需要先引入知识域模型，那是后续域 B 的工作。
+
+## 异步索引 Worker
+
+```powershell
+.venv\Scripts\python -m worker
+.venv\Scripts\python -m worker --once --max-jobs 50
+```
+
+- **抢占**：PostgreSQL 用 `FOR UPDATE SKIP LOCKED`，多副本 Worker 不会重复处理；SQLite 没有该子句，用条件更新兜底（开发/测试单实例）。
+- **隐私**：任务表只存业务元数据（版本、发起人、请求号），不存文档正文。
+- **可观测**：`/health/ready` 返回 `ingestion` 诊断块（`stalled`、`queued`、`running`、`failed`）。它**刻意不放进 `checks`**：队列停滞意味着"没有 Worker 在消费"，重启 Pod 解决不了，因此不应让就绪探针失败。
+- **Worker 与治理模式共用配置**：`direct` 模式下索引完成即发布，`review` 模式下停在 `staged` 等审批。
+
+### 断点续跑引擎（可选）
+
+工程约束（由 `docs/isolation-boundary.md` §2.1 与自动测试共同保证）：
+
+- **checkpoint 不写应用 schema**：默认独立 SQLite 文件；PostgreSQL 下写入独立 schema。否则 `alembic check` 会报出未知表、迁移历史失真——`tests/test_indexing_graph.py` 里有一条测试专门跑完图之后验证 `alembic check` 仍然干净。
+- **LangSmith 默认关闭**：代码不设置任何 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING`（有测试禁止），启用只能是运维的显式动作，且需先完成脱敏评审。
+
+## 评测门与黄金题
+
+"发布"不应只靠人工直觉。黄金题集让每次发布前都有可量化结论：
+
+| 指标 | 定义 |
+|---|---|
+| `recall@k` | 命中期望文档的题数 ÷ 需要命中的题数 |
+门禁行为：
+
 
 ## 模型与密钥
 
@@ -165,6 +244,7 @@ node --check web/admin.js
 - 管理端文档导入仍是同步请求，尚未拆成异步 Worker。
 - 办公产物保存在本地目录，尚未接入对象存储、保留策略和审批发布。
 - Web 前端尚未实现 OIDC Authorization Code + PKCE 登录，当前生产入口面向 Bearer Token 客户端或身份网关。
+- 尚无检索重排（后续批次）。
 - 尚未在本仓库中提供 Kubernetes、云网络策略、备份恢复和可观测性部署清单。
 - 外部模型与真实身份提供商需要部署方自行配置和联调。
 
@@ -172,6 +252,8 @@ node --check web/admin.js
 
 - [项目状态](PROJECT_STATUS.md)
 - [企业架构](docs/enterprise-architecture.md)
+- [业务结构蓝图](docs/business-structure-blueprint.md)（v1 评审稿）
+- [知识治理数据模型](docs/knowledge-governance-data-model.md)（v1 评审稿）
 - [隔离边界](docs/isolation-boundary.md)
 - [文档导入与检索](docs/document-ingestion.md)
 - [实施路线图](docs/implementation-roadmap.md)

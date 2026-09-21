@@ -5,6 +5,9 @@
   const state = { me: null, documents: [], selected: null, acl: null, artifacts: [], audit: [], modelConfig: null, view: 'documents' };
   const viewMeta = {
     documents: ['文档库', '版本、发布状态与访问权限'],
+    governance: ['知识治理', '审批、发布、作废与回滚'],
+    jobs: ['导入任务', '索引队列、重试与失败原因'],
+    evaluation: ['评测门', '黄金题、指标与发布前门禁'],
     artifacts: ['文档生成', '创建并下载办公文档'],
     audit: ['审计记录', '管理操作与请求追踪'],
     system: ['系统状态', '服务依赖与身份上下文'],
@@ -53,6 +56,10 @@
 
   function canAdmin() {
     return state.me?.roles?.includes('admin');
+  }
+
+  function can(capability) {
+    return !!state.me?.capabilities?.includes(capability);
   }
 
   function shortId(value, length = 12) {
@@ -349,6 +356,7 @@
     $('openSource').hidden = !item.source_available;
     $('downloadSource').hidden = !item.source_available;
     $('sourceUnavailable').hidden = item.source_available;
+    renderGovernanceInspector(item);
     if (item.source_available) {
       $('openSource').href = item.source_url;
       $('downloadSource').href = item.download_url;
@@ -612,6 +620,352 @@
     }
   }
 
+  async function loadJobs() {
+    const status = $('jobFilter').value;
+    const query = status ? `?limit=50&status=${encodeURIComponent(status)}` : '?limit=50';
+    const payload = await api(`/api/admin/ingestion/jobs${query}`);
+    state.jobs = payload.items || [];
+    state.queue = payload.queue || null;
+    renderJobs(!!payload.worker_enabled);
+  }
+
+  async function retryJob(jobId) {
+    try {
+      await api(`/api/admin/ingestion/jobs/${jobId}/retry`, { method: 'POST' });
+      toast(`任务 #${jobId} 已重新排队`);
+      await loadJobs();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function cancelJob(jobId) {
+    try {
+      await api(`/api/admin/ingestion/jobs/${jobId}/cancel`, { method: 'POST' });
+      toast(`任务 #${jobId} 已取消`);
+      await loadJobs();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+
+  function metricText(value) {
+    return value === null || value === undefined ? '-' : Number(value).toFixed(3);
+  }
+
+  function reviewerPath(documentId, version, action) {
+    return `/api/admin/documents/${documentId}/versions/${version}/${action}`;
+  }
+
+  function formatTime(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
+  }
+
+  function syncNavigation() {
+    const governanceVisible = can('document.review');
+    $('governanceNav').hidden = !governanceVisible;
+    $('jobsNav').hidden = !can('document.read');
+    if (!governanceVisible && state.view === 'governance') setView('documents');
+    if (!can('document.read') && ['jobs', 'evaluation'].includes(state.view)) setView('documents');
+  }
+
+  async function loadGovernance() {
+    const payload = await api('/api/admin/governance/pending');
+    state.pendingReviews = payload.items || [];
+    renderGovernance();
+  }
+
+  function renderGovernance() {
+    const body = $('governanceRows');
+    body.replaceChildren();
+    $('governanceCount').textContent = `${state.pendingReviews.length} 个`;
+    $('governanceEmpty').hidden = state.pendingReviews.length > 0;
+    for (const item of state.pendingReviews) {
+      const row = document.createElement('tr');
+
+      const titleCell = document.createElement('td');
+      const copy = document.createElement('span');
+      copy.className = 'document-copy';
+      const title = document.createElement('strong');
+      title.textContent = item.title;
+      const source = document.createElement('small');
+      source.textContent = item.source_key;
+      copy.append(title, source);
+      titleCell.appendChild(copy);
+
+      const versionCell = document.createElement('td');
+      versionCell.textContent = `v${item.version}`;
+      const submitterCell = document.createElement('td');
+      submitterCell.textContent = shortId(item.submitted_by_subject_id, 10);
+      const timeCell = document.createElement('td');
+      timeCell.textContent = formatTime(item.submitted_at);
+      const chunkCell = document.createElement('td');
+      chunkCell.textContent = Number(item.chunk_count || 0).toLocaleString();
+      const actionCell = document.createElement('td');
+      const review = document.createElement('button');
+      review.className = 'secondary-button';
+      review.type = 'button';
+      review.textContent = '审核';
+      review.addEventListener('click', () => openPreview(item.document_id, item.version, item.title));
+      actionCell.appendChild(review);
+
+      row.append(titleCell, versionCell, submitterCell, timeCell, chunkCell, actionCell);
+      body.appendChild(row);
+    }
+  }
+
+  function versionAction(label, capability, handler, kind = 'secondary-button') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = kind;
+    button.textContent = label;
+    button.hidden = !can(capability);
+    button.addEventListener('click', handler);
+    return button;
+  }
+
+  function renderGovernanceInspector(item) {
+    const list = $('versionList');
+    list.replaceChildren();
+    const versions = item?.versions || [];
+    $('versionEmpty').hidden = versions.length > 0;
+    for (const version of versions) {
+      const card = document.createElement('div');
+      card.className = 'version-item';
+
+      const head = document.createElement('div');
+      head.className = 'version-item-head';
+      const label = document.createElement('strong');
+      label.textContent = `v${version.version}`;
+      head.append(label, statusBadge(version.status));
+
+      const meta = document.createElement('div');
+      meta.className = 'version-item-meta';
+      const parts = [`提交 ${shortId(version.submitted_by_subject_id, 10)} · ${formatTime(version.submitted_at)}`];
+      if (version.published_at) parts.push(`发布 ${formatTime(version.published_at)}`);
+      if (version.withdrawn_reason) parts.push(`作废原因：${version.withdrawn_reason}`);
+      if (version.error_code) parts.push(`错误：${version.error_code}`);
+      meta.textContent = parts.join(' · ');
+
+      const actions = document.createElement('div');
+      actions.className = 'version-actions';
+      if (version.status === 'staged') {
+        actions.append(
+          versionAction('预览', 'document.review', () => openPreview(item.document_id, version.version, item.title)),
+          versionAction('通过', 'document.review', () => decideVersion(item.document_id, version.version, 'approve', ''), 'primary-button'),
+          versionAction('驳回', 'document.review', () => decideVersion(item.document_id, version.version, 'reject', '')),
+          versionAction('发布', 'document.publish', () => publishVersion(item.document_id, version.version), 'primary-button'),
+        );
+      }
+      if (version.status === 'indexed') {
+        actions.append(versionAction('作废', 'document.withdraw', () => openReason(
+          '作废版本',
+          '作废后该版本立即退出检索；原文件、知识块和审批记录都会保留。',
+          reason => withdrawVersion(item.document_id, version.version, reason),
+        )));
+      }
+      if (version.status === 'superseded' || version.status === 'withdrawn') {
+        actions.append(versionAction('回滚到此版本', 'document.rollback', () => openReason(
+          '回滚版本',
+          '回滚会把该版本重新置为已发布，当前已发布版本转为已替代；不会重新向量化。',
+          reason => rollbackVersion(item.document_id, version.version, reason),
+        )));
+      }
+
+      const history = document.createElement('div');
+      history.className = 'version-item-meta';
+      actions.append(versionAction('审批记录', 'document.read', () => loadVersionReviews(
+        item.document_id, version.version, history,
+      )));
+
+      card.append(head, meta, actions, history);
+      list.appendChild(card);
+    }
+  }
+
+  async function loadVersionReviews(documentId, version, container) {
+    try {
+      const payload = await api(reviewerPath(documentId, version, 'reviews'));
+      container.replaceChildren();
+      if (!payload.items.length) {
+        container.textContent = '暂无审批记录';
+        return;
+      }
+      container.textContent = payload.items.map(record => {
+        const override = record.is_override ? '（越权）' : '';
+        const comment = record.comment ? ` · ${record.comment}` : '';
+        return `${formatTime(record.created_at)} · ${record.action}${override} · ${shortId(record.actor_subject_id, 8)}${comment}`;
+      }).join('\n');
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function openPreview(documentId, version, title = '') {
+    try {
+      const payload = await api(reviewerPath(documentId, version, 'preview'));
+      const record = payload.version;
+      state.preview = { document_id: documentId, version, status: record.status };
+      $('previewTitle').textContent = title ? `${title} · v${version}` : `v${version}`;
+
+      const meta = $('previewMeta');
+      meta.replaceChildren();
+      const rows = [
+        ['状态', statusText[record.status] || record.status],
+        ['知识块', String(record.chunk_count ?? payload.chunks.length)],
+        ['提交人', shortId(record.submitted_by_subject_id, 12)],
+        ['提交时间', formatTime(record.submitted_at)],
+      ];
+      for (const [name, value] of rows) {
+        const cell = document.createElement('div');
+        const term = document.createElement('dt');
+        term.textContent = name;
+        const detail = document.createElement('dd');
+        detail.textContent = value;
+        cell.append(term, detail);
+        meta.appendChild(cell);
+      }
+
+      const chunks = $('previewChunks');
+      chunks.replaceChildren();
+      for (const chunk of payload.chunks) {
+        const item = document.createElement('div');
+        item.className = 'chunk-item';
+        const heading = document.createElement('strong');
+        const page = chunk.page ? ` · 第 ${chunk.page} 页` : '';
+        heading.textContent = `#${chunk.ordinal + 1} ${chunk.heading || '正文'}${page}`;
+        const body = document.createElement('pre');
+        body.textContent = chunk.content;
+        item.append(heading, body);
+        chunks.appendChild(item);
+      }
+      if (!payload.chunks.length) {
+        const empty = document.createElement('p');
+        empty.className = 'reason-hint';
+        empty.textContent = '该版本没有可预览的内容块。';
+        chunks.appendChild(empty);
+      }
+
+      $('previewComment').value = '';
+      $('overrideReview').checked = false;
+      $('overrideField').hidden = !(
+        state.me?.governance_override_allowed || state.me?.evaluation_override_allowed
+      );
+      const staged = record.status === 'staged';
+      $('approveVersion').hidden = !(staged && can('document.review'));
+      $('rejectVersion').hidden = !(staged && can('document.review'));
+      $('publishVersion').hidden = !(staged && can('document.publish'));
+      $('previewDialog').showModal();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+  function overrideRequested() {
+    return !!$('overrideReview')?.checked;
+  }
+
+  async function afterGovernanceChange() {
+    await Promise.all([
+      loadDocuments(),
+      loadGovernance().catch(() => {}),
+      loadJobs().catch(() => {}),
+      loadAudit(true),
+    ]);
+    if (state.selected) {
+      const refreshed = state.documents.find(item => item.document_id === state.selected.document_id);
+      if (refreshed) {
+        state.selected = refreshed;
+        renderGovernanceInspector(refreshed);
+      }
+    }
+  }
+
+  async function decideVersion(documentId, version, decision, comment) {
+    try {
+      await api(reviewerPath(documentId, version, 'review'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision, comment, override: overrideRequested() }),
+      });
+      toast(decision === 'approve' ? '已通过审核，仍需发布才会生效' : '已驳回该版本');
+      $('previewDialog').close();
+      await afterGovernanceChange();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function publishVersion(documentId, version) {
+    try {
+      await api(reviewerPath(documentId, version, 'publish'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          comment: $('previewComment').value.trim(),
+          override: overrideRequested(),
+        }),
+      });
+      toast('版本已发布上线');
+      $('previewDialog').close();
+      await afterGovernanceChange();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function withdrawVersion(documentId, version, reason) {
+    try {
+      await api(reviewerPath(documentId, version, 'withdraw'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      toast('版本已作废并退出检索');
+      await afterGovernanceChange();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function rollbackVersion(documentId, version, reason) {
+    try {
+      await api(reviewerPath(documentId, version, 'rollback'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      toast('已回滚到该版本');
+      await afterGovernanceChange();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  let reasonHandler = null;
+
+  function openReason(title, hint, handler) {
+    reasonHandler = handler;
+    $('reasonTitle').textContent = title;
+    $('reasonHint').textContent = hint;
+    $('reasonText').value = '';
+    $('reasonDialog').showModal();
+  }
+
+  async function confirmReason() {
+    const reason = $('reasonText').value.trim();
+    if (!reason) {
+      toast('请填写原因', 'error');
+      return;
+    }
+    const handler = reasonHandler;
+    reasonHandler = null;
+    $('reasonDialog').close();
+    if (handler) await handler(reason);
+  }
+
   function setView(view) {
     state.view = view;
     document.querySelectorAll('.nav-item').forEach(button => button.classList.toggle('active', button.dataset.view === view));
@@ -619,6 +973,9 @@
     [$('pageTitle').textContent, $('pageSubtitle').textContent] = viewMeta[view];
     closeSidebar();
     if (view === 'audit') loadAudit();
+    if (view === 'governance') loadGovernance().catch(error => toast(error.message, 'error'));
+    if (view === 'jobs') loadJobs().catch(error => toast(error.message, 'error'));
+    if (view === 'evaluation') loadEvaluation().catch(error => toast(error.message, 'error'));
     if (view === 'artifacts') loadArtifacts();
     if (view === 'system') Promise.all([loadHealth(), loadModelConfig()]);
   }
@@ -655,8 +1012,16 @@
     try {
       const result = await api('/api/admin/documents/import', { method: 'POST', body: data });
       closeImport();
-      toast(result.duplicate ? '文档内容未变化' : `文档已导入为 v${result.version}`);
-      await Promise.all([loadDocuments(), loadAudit(true)]);
+      if (result.duplicate) {
+        toast('文档内容未变化');
+      } else if (result.queued) {
+        toast(`已排队：任务 #${result.job_id}，由 Worker 完成索引`);
+      } else if (result.review_required) {
+        toast(`已提交待审核：v${result.version}`);
+      } else {
+        toast(`文档已导入并发布为 v${result.version}`);
+      }
+      await afterGovernanceChange();
     } catch (error) {
       toast(error.message, 'error');
     } finally {
@@ -671,6 +1036,9 @@
     button.disabled = true;
     try {
       if (state.view === 'documents') await loadDocuments();
+      if (state.view === 'governance') await loadGovernance();
+      if (state.view === 'jobs') await loadJobs();
+      if (state.view === 'evaluation') await loadEvaluation();
       if (state.view === 'artifacts') await loadArtifacts();
       if (state.view === 'audit') await loadAudit();
       if (state.view === 'system') await Promise.all([loadHealth(), loadModelConfig(true)]);
@@ -708,6 +1076,28 @@
     $('closeImport').addEventListener('click', closeImport);
     $('cancelImport').addEventListener('click', closeImport);
     $('importForm').addEventListener('submit', submitImport);
+    $('closePreview').addEventListener('click', () => $('previewDialog').close());
+    $('approveVersion').addEventListener('click', () => {
+      if (!state.preview) return;
+      decideVersion(state.preview.document_id, state.preview.version, 'approve',
+        $('previewComment').value.trim());
+    });
+    $('rejectVersion').addEventListener('click', () => {
+      const comment = $('previewComment').value.trim();
+      if (!comment) {
+        toast('驳回必须填写审核意见', 'error');
+        return;
+      }
+      if (!state.preview) return;
+      decideVersion(state.preview.document_id, state.preview.version, 'reject', comment);
+    });
+    $('publishVersion').addEventListener('click', () => {
+      if (!state.preview) return;
+      publishVersion(state.preview.document_id, state.preview.version);
+    });
+    $('closeReason').addEventListener('click', () => $('reasonDialog').close());
+    $('cancelReason').addEventListener('click', () => $('reasonDialog').close());
+    $('confirmReason').addEventListener('click', confirmReason);
     $('artifactForm').addEventListener('submit', submitArtifact);
     $('modelForm').addEventListener('submit', saveModelConfig);
     $('checkModelRuntime').addEventListener('click', () => loadModelConfig());
@@ -741,6 +1131,7 @@
       await setupAuthentication();
       state.me = await api('/api/me');
       setIdentity();
+      syncNavigation();
     } catch (error) {
       $('roleBadge').textContent = error.status === 403 ? '无管理权限' : '未认证';
       $('displayName').textContent = '无法进入管理控制台';
@@ -756,7 +1147,14 @@
     } catch (error) {
       toast(`文档库加载失败：${error.message}`, 'error');
     }
-    await Promise.all([loadArtifacts(true), loadHealth(), loadModelConfig(true)]);
+    await Promise.all([
+      loadArtifacts(true),
+      loadHealth(),
+      loadModelConfig(true),
+      can('document.review') ? loadGovernance().catch(() => {}) : Promise.resolve(),
+      can('document.read') ? loadJobs().catch(() => {}) : Promise.resolve(),
+      can('document.read') ? loadEvaluation().catch(() => {}) : Promise.resolve(),
+    ]);
   }
 
   init();

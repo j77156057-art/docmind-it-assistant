@@ -23,6 +23,13 @@
 
 迁移代码必须删除开发项目依赖，并在 IT 项目中拥有自己的测试、配置和版本历史。
 
+### 2.1 编排框架的准入条件（批次 3 起生效）
+
+1. **只出现在非查询进程**：`worker/` 与 `ingestion/` 可以导入；`app.py`、`assistant/`、`backend/`
+   不得出现在其 import 闭包内（由 §5 的闭包测试证明，而不是靠人工评审）。
+5. **LangSmith 默认关闭**：代码不得设置 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING` 等环境变量；
+   启用只能是运维的显式动作，且必须先完成脱敏评审（禁止上报正文、问题、回答与密钥）。
+
 ## 3. 禁止进入查询服务的能力
 
 | 禁止项 | 代表模块或接口 | 原因 |
@@ -43,15 +50,23 @@
 - IT 查询容器根文件系统只读；管理容器仅开放知识导入与 `IT_ARTIFACT_OUTPUT_PATH` 专用写入挂载。
 - 生产网络策略默认拒绝出站，仅允许批准的模型与基础设施地址。
 - `app.py` 查询进程不暴露文档上传；`ingestion.cli` 仅由后台管理员或 Worker 身份运行。
+- `worker` 是独立进程与独立服务身份：只消费任务队列、读取原始文件、写入文档版本与 checkpoint，
+  不与查询进程共享运行目录，也不注册任何 HTTP 路由。
 - 办公产物创建、列表和下载只由独立 `admin_app.py` 提供，查询进程不导入渲染模块或注册产物路由。
 - 生产中查询角色只授予已发布知识读取及查询账本写入权限，导入角色单独授予文档版本写入权限。
 
 ## 5. 自动守卫
 
-`tests/test_isolation_boundary.py` 会扫描查询服务源码，并拒绝：
+`tests/test_isolation_boundary.py` 以两种机制守卫边界：
 
-- 导入开发 Agent、工作台、游戏或进程执行模块；
 - 调用 `os.system`、`os.popen`、`subprocess.run` 或 `subprocess.Popen`。
+**（2）名单与文本检查（补充）**：
+
+- 拒绝导入开发 Agent、工作台、游戏或进程执行模块，扫描范围已扩展至 `ingestion/` 与 `worker/`；
+- 拒绝调用 `os.system`、`os.popen`、`subprocess.run` 或 `subprocess.Popen`；
+- 拒绝在查询侧使用 `import_module` / `__import__` / `sys.modules[...]` 动态加载上述框架；
+- 拒绝 `worker/` 反向导入 `app.py`、`admin_app.py` 或 `assistant/`；
+- 拒绝任何源码设置 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING` / `LANGSMITH_API_KEY`。
 
 后续应在 CI 增加依赖树检查、容器权限检查和出站网络测试。
 
@@ -60,6 +75,7 @@
 每次合并前确认：
 
 - [ ] 新依赖是否只用于查询、检索、存储、安全或观测？
+- [ ] 若新依赖属于编排/追踪类框架：是否只落在 `worker/`、是否通过闭包检查、是否默认关闭追踪？
 - [ ] 是否新增了文件写入、命令执行、Git 或任意网络能力？
 - [ ] 用户输入是否可能进入日志、模型外部端点或错误信息？
 - [x] 文档 ACL 是否在检索阶段生效？

@@ -5,21 +5,23 @@ from pathlib import Path
 
 from decimal import Decimal
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 import base64
 import hashlib
 
-from sqlalchemy import and_, case, create_engine, func, inspect, or_, select, text
+from sqlalchemy import and_, case, create_engine, func, inspect, or_, select, text, update
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 from .db_models import (
-    AuditEventRecord, Base, DocumentAclRecord, DocumentChunkRecord, DocumentRecord,
-    DocumentVersionRecord, ModelUsageRecord, QueryRecord, RuntimeModelConfigRecord,
-    RuntimeProviderCredentialRecord,
+    IN_FLIGHT_STATUSES, AuditEventRecord, Base,
+    DocumentAclRecord, DocumentChunkRecord, DocumentRecord, DocumentVersionRecord,
+    DocumentVersionReviewRecord,
+    ModelUsageRecord, QueryRecord,
+    RuntimeModelConfigRecord, RuntimeProviderCredentialRecord,
 )
 from cryptography.fernet import Fernet, InvalidToken
 from .pricing import cost_cny, pricing_status
@@ -32,6 +34,14 @@ def _database_url(value: str) -> str:
     if "://" in value:
         return value
     return f"sqlite:///{Path(value).resolve().as_posix()}"
+
+
+class GovernanceError(ValueError):
+    """Illegal knowledge-governance action. ``code`` is stable for tests and alerting."""
+
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(detail or code)
+        self.code = code
 
 
 class QueryDatabase:
@@ -83,6 +93,7 @@ class QueryDatabase:
                 QueryRecord.__tablename__, ModelUsageRecord.__tablename__,
                 DocumentRecord.__tablename__, DocumentVersionRecord.__tablename__,
                 DocumentChunkRecord.__tablename__, DocumentAclRecord.__tablename__,
+                DocumentVersionReviewRecord.__tablename__,
                 AuditEventRecord.__tablename__, RuntimeModelConfigRecord.__tablename__,
                 RuntimeProviderCredentialRecord.__tablename__,
             }
@@ -202,9 +213,68 @@ class QueryDatabase:
             with self._sessions.begin() as session:
                 session.add_all(rows)
 
+    @staticmethod
+    def _new_review(*, version_id: int, action: str, from_status: str, to_status: str,
+                    actor_subject_id: str = "", comment: str = "", is_override: bool = False,
+                    request_id: str = "") -> DocumentVersionReviewRecord:
+        return DocumentVersionReviewRecord(
+            document_version_id=version_id,
+            action=action,
+            from_status=from_status,
+            to_status=to_status,
+            actor_subject_id=(actor_subject_id or "system")[:64],
+            comment=(comment or "")[:1000],
+            is_override=bool(is_override),
+            request_id=(request_id or "")[:128],
+            created_at=datetime.now(timezone.utc),
+        )
+
+    @staticmethod
+    def _self_review_override(*, submitted_by: str, actor_subject_id: str,
+                              require_separation: bool, allow_override: bool) -> bool:
+        """Reject self-review unless the audited override switch allows it.
+
+        Returns True when the recorded decision must be flagged as an override.
+        """
+        self_review = bool(
+            require_separation and actor_subject_id and submitted_by == actor_subject_id
+        )
+        if self_review and not allow_override:
+            raise GovernanceError(
+                "separation_of_duties_violation", "提交人不能审核自己提交的版本",
+            )
+        return self_review
+
+    @staticmethod
+    def _version_public(row: DocumentVersionRecord) -> dict:
+        return {
+            "document_id": row.document_id,
+            "version_id": row.id,
+            "version": row.version,
+            "status": row.status,
+            "chunk_count": row.chunk_count,
+            "submitted_by_subject_id": row.submitted_by_subject_id,
+            "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+            "published_by_subject_id": row.published_by_subject_id,
+            "published_at": row.published_at.isoformat() if row.published_at else None,
+            "withdrawn_at": row.withdrawn_at.isoformat() if row.withdrawn_at else None,
+            "withdrawn_reason": row.withdrawn_reason,
+        }
+
+    def _version_row(self, session, document_id: int, version: int) -> DocumentVersionRecord:
+        row = session.scalar(select(DocumentVersionRecord).where(
+            DocumentVersionRecord.document_id == int(document_id),
+            DocumentVersionRecord.version == int(version),
+        ))
+        if row is None:
+            raise ValueError("文档版本不存在")
+        return row
+
     def begin_document_import(self, *, source_key: str, title: str, mime_type: str,
                               content_sha256: str, access_scope: str | None = None,
-                              classification: str | None = None) -> dict:
+                              classification: str | None = None,
+                              submitted_by_subject_id: str = "",
+                              request_id: str = "") -> dict:
         normalized_scope = str(access_scope).strip().lower() if access_scope is not None else None
         if normalized_scope is not None and normalized_scope not in {"public", "restricted"}:
             raise ValueError("文档访问范围无效")
@@ -223,10 +293,16 @@ class QueryDatabase:
                 session.add(document)
                 session.flush()
             else:
+                # Importing must never change who may read an existing document. That decision
+                # belongs to the ACL endpoint, which requires acl.write and is audited; otherwise
+                # any principal allowed to import could widen a restricted document to public.
+                if normalized_scope is not None and normalized_scope != document.access_scope:
+                    raise GovernanceError(
+                        "access_scope_change_requires_acl",
+                        "已存在文档的访问范围不能通过导入修改，请在权限接口中调整",
+                    )
                 document.title = title[:512]
                 document.mime_type = mime_type
-                if normalized_scope is not None:
-                    document.access_scope = normalized_scope
                 if classification is not None:
                     document.classification = classification[:32]
                 document.updated_at = now
@@ -234,15 +310,29 @@ class QueryDatabase:
                 DocumentVersionRecord.document_id == document.id,
                 DocumentVersionRecord.content_sha256 == content_sha256,
             ))
-            if existing is not None and existing.status in {"indexed", "pending"}:
+            if existing is not None and existing.status in ({"indexed"} | set(IN_FLIGHT_STATUSES)):
                 return {
                     "document_id": document.id, "version_id": existing.id,
-                    "version": existing.version, "duplicate": True, "status": existing.status,
+                    "version": existing.version, "duplicate": True, "reopened": False,
+                    "status": existing.status,
                 }
             if existing is not None:
-                existing.status = "pending"
+                # Re-submitting content that was rejected, withdrawn, superseded or failed is an
+                # explicit reopen: it goes back to the queue and must pass review again. The row is
+                # reused because uq_document_versions_hash forbids a second row with this content.
+                previous_status = existing.status
+                existing.status = "queued"
                 existing.error_code = None
+                existing.submitted_by_subject_id = (submitted_by_subject_id or "")[:64] or None
+                existing.submitted_at = now
+                existing.withdrawn_at = None
+                existing.withdrawn_reason = None
                 version = existing
+                session.add(self._new_review(
+                    version_id=version.id, action="reopen", from_status=previous_status,
+                    to_status="queued", actor_subject_id=submitted_by_subject_id,
+                    comment=f"重新提交（原状态 {previous_status}）", request_id=request_id,
+                ))
             else:
                 latest = session.scalar(select(func.max(DocumentVersionRecord.version)).where(
                     DocumentVersionRecord.document_id == document.id,
@@ -251,25 +341,39 @@ class QueryDatabase:
                     document_id=document.id,
                     version=int(latest) + 1,
                     content_sha256=content_sha256,
-                    status="pending",
+                    status="queued",
                     chunk_count=0,
                     created_at=now,
+                    submitted_by_subject_id=(submitted_by_subject_id or "")[:64] or None,
+                    submitted_at=now,
                 )
                 session.add(version)
                 session.flush()
+                session.add(self._new_review(
+                    version_id=version.id, action="submit", from_status="none",
+                    to_status="queued", actor_subject_id=submitted_by_subject_id,
+                    request_id=request_id,
+                ))
+            session.flush()
             return {
                 "document_id": document.id, "version_id": version.id,
-                "version": version.version, "duplicate": False, "status": version.status,
+                "version": version.version, "duplicate": False,
+                "reopened": existing is not None, "status": version.status,
             }
 
-    def complete_document_import(self, version_id: int, chunks, vectors) -> None:
+    def persist_document_chunks(self, version_id: int, chunks, vectors) -> int:
+        """Replace every chunk of a version. Used by the synchronous indexing path."""
         if len(chunks) != len(vectors):
             raise ValueError("文档块和向量数量不一致")
+        if not chunks:
+            raise ValueError("文档没有可索引的文本内容")
         now = datetime.now(timezone.utc)
         with self._sessions.begin() as session:
             version = session.get(DocumentVersionRecord, version_id)
             if version is None:
                 raise ValueError("文档版本不存在")
+            if version.status not in {"queued", "processing"}:
+                raise GovernanceError("invalid_state_transition", "该版本不处于可索引状态")
             session.query(DocumentChunkRecord).filter(
                 DocumentChunkRecord.document_version_id == version_id,
             ).delete()
@@ -286,15 +390,115 @@ class QueryDatabase:
                 )
                 for chunk, vector in zip(chunks, vectors)
             ])
-            session.query(DocumentVersionRecord).filter(
-                DocumentVersionRecord.document_id == version.document_id,
-                DocumentVersionRecord.id != version.id,
-                DocumentVersionRecord.status == "indexed",
-            ).update({"status": "superseded"})
-            version.status = "indexed"
-            version.chunk_count = len(chunks)
+            session.flush()
+            return len(chunks)
+
+    def replace_document_chunk_batch(self, version_id: int, rows) -> int:
+        """Idempotently write one batch of chunks (ordinal, heading, page, content, embedding).
+
+        Delete-then-insert on the batch's own ordinals, so a resumed or repeated batch can never
+        duplicate rows even though the checkpoint write and this write are separate transactions.
+        """
+        if not rows:
+            return 0
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            version = session.get(DocumentVersionRecord, version_id)
+            if version is None:
+                raise ValueError("文档版本不存在")
+            if version.status not in {"queued", "processing"}:
+                raise GovernanceError("invalid_state_transition", "该版本不处于可索引状态")
+            ordinals = [int(row["ordinal"]) for row in rows]
+            session.query(DocumentChunkRecord).filter(
+                DocumentChunkRecord.document_version_id == version_id,
+                DocumentChunkRecord.ordinal.in_(ordinals),
+            ).delete(synchronize_session=False)
+            session.add_all([
+                DocumentChunkRecord(
+                    document_version_id=version_id,
+                    ordinal=int(row["ordinal"]),
+                    heading=str(row.get("heading") or "")[:512],
+                    page_number=row.get("page_number"),
+                    content=str(row.get("content") or ""),
+                    search_text=lexical_text(f"{row.get('heading') or ''} {row.get('content') or ''}"),
+                    embedding=list(row["embedding"]),
+                    created_at=now,
+                )
+                for row in rows
+            ])
+            session.flush()
+            return len(rows)
+
+    def clear_document_version_chunks(self, version_id: int) -> int:
+        """Drop staged chunks of a version so a fresh indexing run starts clean."""
+        with self._sessions.begin() as session:
+            deleted = session.query(DocumentChunkRecord).filter(
+                DocumentChunkRecord.document_version_id == version_id,
+            ).delete(synchronize_session=False)
+            return int(deleted or 0)
+
+    def count_document_chunks(self, version_id: int) -> int:
+        with self._sessions() as session:
+            return int(session.scalar(
+                select(func.count()).select_from(DocumentChunkRecord).where(
+                    DocumentChunkRecord.document_version_id == version_id,
+                )
+            ) or 0)
+
+    def finalize_document_version(self, version_id: int, *, chunk_count: int, publish: bool,
+                                  actor_subject_id: str = "", comment: str = "",
+                                  request_id: str = "") -> dict:
+        """Move an indexed version to ``staged`` or straight to ``indexed``.
+
+        ``staged`` is deliberately not retrievable: only ``indexed`` appears in any search path.
+        """
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            version = session.get(DocumentVersionRecord, version_id)
+            if version is None:
+                raise ValueError("文档版本不存在")
+            if version.status not in {"queued", "processing"}:
+                raise GovernanceError("invalid_state_transition", "该版本不处于可索引状态")
+            from_status = version.status
+            version.chunk_count = int(chunk_count)
             version.error_code = None
-            version.published_at = now
+            version.indexed_at = now
+            if publish:
+                for other in session.scalars(select(DocumentVersionRecord).where(
+                    DocumentVersionRecord.document_id == version.document_id,
+                    DocumentVersionRecord.id != version.id,
+                    DocumentVersionRecord.status == "indexed",
+                )).all():
+                    other.status = "superseded"
+                    other.superseded_by_version_id = version.id
+                version.status = "indexed"
+                version.published_at = now
+                version.published_by_subject_id = (actor_subject_id or "system")[:64]
+                version.withdrawn_at = None
+                version.withdrawn_reason = None
+                session.add(self._new_review(
+                    version_id=version.id, action="publish", from_status=from_status,
+                    to_status="indexed", actor_subject_id=actor_subject_id, comment=comment,
+                    request_id=request_id,
+                ))
+            else:
+                version.status = "staged"
+            session.flush()
+            return self._version_public(version)
+
+    def finalize_document_indexing(self, version_id: int, chunks, vectors, *, publish: bool,
+                                   actor_subject_id: str = "", comment: str = "",
+                                   request_id: str = "") -> dict:
+        """Synchronous composition: persist every chunk, then finalize the version."""
+        chunk_count = self.persist_document_chunks(version_id, chunks, vectors)
+        return self.finalize_document_version(
+            version_id, chunk_count=chunk_count, publish=publish,
+            actor_subject_id=actor_subject_id, comment=comment, request_id=request_id,
+        )
+
+    def complete_document_import(self, version_id: int, chunks, vectors) -> None:
+        """Direct-mode entry point: indexing completes and the version is published at once."""
+        self.finalize_document_indexing(version_id, chunks, vectors, publish=True)
 
     def fail_document_import(self, version_id: int, error_code: str) -> None:
         with self._sessions.begin() as session:
@@ -302,6 +506,252 @@ class QueryDatabase:
             if version is not None:
                 version.status = "failed"
                 version.error_code = error_code[:64]
+
+    def document_version_pk(self, document_id: int, version: int) -> int:
+        """Resolve (document_id, version number) to the version primary key."""
+        with self._sessions() as session:
+            return int(self._version_row(session, document_id, version).id)
+
+    def document_version_reference(self, version_id: int) -> dict:
+        """Resolve a version id to the document id and version number (for the worker)."""
+        with self._sessions() as session:
+            row = session.get(DocumentVersionRecord, int(version_id))
+            if row is None:
+                raise ValueError("文档版本不存在")
+            return {
+                "document_id": row.document_id,
+                "version": row.version,
+                "status": row.status,
+                "document_version_id": row.id,
+            }
+
+    def mark_document_version_processing(self, version_id: int, *, title: str = "",
+                                         mime_type: str = "") -> dict:
+        """Claim a queued version for processing and refine its document metadata."""
+        with self._sessions.begin() as session:
+            version = session.get(DocumentVersionRecord, version_id)
+            if version is None:
+                raise ValueError("文档版本不存在")
+            if version.status not in {"queued", "processing"}:
+                raise GovernanceError("invalid_state_transition", "该版本不处于可处理状态")
+            version.status = "processing"
+            if title or mime_type:
+                document = session.get(DocumentRecord, version.document_id)
+                if document is not None:
+                    if title:
+                        document.title = title[:512]
+                    if mime_type:
+                        document.mime_type = mime_type[:128]
+                    document.updated_at = datetime.now(timezone.utc)
+            session.flush()
+            return self._version_public(version)
+
+    def reset_document_version_for_retry(self, version_id: int) -> None:
+        """Return a version to the queue so a retried job can index it again."""
+        with self._sessions.begin() as session:
+            version = session.get(DocumentVersionRecord, version_id)
+            if version is not None and version.status in {"processing", "failed"}:
+                version.status = "queued"
+                version.error_code = None
+
+    def pending_review_versions(self, limit: int = 100) -> list[dict]:
+        """Versions waiting for a review decision; never retrievable until published."""
+        statement = (
+            select(DocumentRecord, DocumentVersionRecord)
+            .join(DocumentVersionRecord, DocumentVersionRecord.document_id == DocumentRecord.id)
+            .where(DocumentVersionRecord.status == "staged")
+            .order_by(DocumentVersionRecord.submitted_at, DocumentVersionRecord.id)
+            .limit(max(1, min(int(limit), 200)))
+        )
+        with self._sessions() as session:
+            rows = session.execute(statement).all()
+        return [{
+            "document_id": document.id,
+            "title": document.title,
+            "source_key": document.source_key,
+            "access_scope": document.access_scope,
+            "classification": document.classification,
+            "version": version.version,
+            "chunk_count": version.chunk_count,
+            "submitted_by_subject_id": version.submitted_by_subject_id,
+            "submitted_at": version.submitted_at.isoformat() if version.submitted_at else None,
+            "indexed_at": version.indexed_at.isoformat() if version.indexed_at else None,
+        } for document, version in rows]
+
+    def document_version_reviews(self, document_id: int, version: int,
+                                 limit: int = 100) -> list[dict]:
+        with self._sessions() as session:
+            row = self._version_row(session, document_id, version)
+            records = session.scalars(
+                select(DocumentVersionReviewRecord)
+                .where(DocumentVersionReviewRecord.document_version_id == row.id)
+                .order_by(DocumentVersionReviewRecord.id.desc())
+                .limit(max(1, min(int(limit), 200)))
+            ).all()
+        return [{
+            "id": item.id,
+            "action": item.action,
+            "from_status": item.from_status,
+            "to_status": item.to_status,
+            "actor_subject_id": item.actor_subject_id,
+            "comment": item.comment,
+            "is_override": item.is_override,
+            "request_id": item.request_id,
+            "created_at": item.created_at.isoformat(),
+        } for item in records]
+
+    def document_version_chunks(self, document_id: int, version: int,
+                               limit: int = 200) -> list[dict]:
+        """Reviewer preview of one version. Deliberately bypasses ACL, so callers must require a
+        review capability and write an audit event for every read."""
+        with self._sessions() as session:
+            row = self._version_row(session, document_id, version)
+            chunks = session.scalars(
+                select(DocumentChunkRecord)
+                .where(DocumentChunkRecord.document_version_id == row.id)
+                .order_by(DocumentChunkRecord.ordinal)
+                .limit(max(1, min(int(limit), 500)))
+            ).all()
+            return {
+                "version": self._version_public(row),
+                "chunks": [{
+                    "ordinal": chunk.ordinal,
+                    "heading": chunk.heading,
+                    "page": chunk.page_number,
+                    "content": chunk.content,
+                } for chunk in chunks],
+            }
+
+    def review_document_version(self, *, document_id: int, version: int, decision: str,
+                                actor_subject_id: str, comment: str = "", request_id: str = "",
+                                require_separation_of_duties: bool = True,
+                                allow_override: bool = False) -> dict:
+        normalized = (decision or "").strip().lower()
+        if normalized not in {"approve", "reject"}:
+            raise GovernanceError("invalid_review_decision", "审核结论只能是 approve 或 reject")
+        cleaned = (comment or "").strip()
+        if normalized == "reject" and not cleaned:
+            raise GovernanceError("review_comment_required", "驳回必须填写意见")
+        with self._sessions.begin() as session:
+            row = self._version_row(session, document_id, version)
+            if row.status != "staged":
+                raise GovernanceError("invalid_state_transition", "只有待审核版本可以审核")
+            is_override = self._self_review_override(
+                submitted_by=row.submitted_by_subject_id or "", actor_subject_id=actor_subject_id,
+                require_separation=require_separation_of_duties, allow_override=allow_override,
+            )
+            if normalized == "approve":
+                # Approval authorises publication; it does not publish. The status is unchanged so
+                # the publish action stays an explicit, separately attributable decision.
+                session.add(self._new_review(
+                    version_id=row.id, action="approve", from_status="staged", to_status="staged",
+                    actor_subject_id=actor_subject_id, comment=cleaned, is_override=is_override,
+                    request_id=request_id,
+                ))
+            else:
+                row.status = "rejected"
+                session.add(self._new_review(
+                    version_id=row.id, action="reject", from_status="staged", to_status="rejected",
+                    actor_subject_id=actor_subject_id, comment=cleaned, is_override=is_override,
+                    request_id=request_id,
+                ))
+            session.flush()
+            return self._version_public(row)
+
+    def publish_document_version(self, *, document_id: int, version: int, actor_subject_id: str,
+                                 comment: str = "", request_id: str = "",
+                                 allow_override: bool = False, gate_override: bool = False,
+                                 gate_comment: str = "") -> dict:
+        with self._sessions.begin() as session:
+            row = self._version_row(session, document_id, version)
+            if row.status != "staged":
+                raise GovernanceError("invalid_state_transition", "只有待审核版本可以发布")
+            approvals = session.scalar(
+                select(func.count()).select_from(DocumentVersionReviewRecord).where(
+                    DocumentVersionReviewRecord.document_version_id == row.id,
+                    DocumentVersionReviewRecord.action == "approve",
+                )
+            ) or 0
+            if not approvals and not allow_override:
+                raise GovernanceError("review_approval_required", "发布前必须先通过审核")
+            is_override = not approvals
+            now = datetime.now(timezone.utc)
+            for other in session.scalars(select(DocumentVersionRecord).where(
+                DocumentVersionRecord.document_id == row.document_id,
+                DocumentVersionRecord.id != row.id,
+                DocumentVersionRecord.status == "indexed",
+            )).all():
+                other.status = "superseded"
+                other.superseded_by_version_id = row.id
+            row.status = "indexed"
+            row.indexed_at = row.indexed_at or now
+            row.published_at = now
+            row.published_by_subject_id = (actor_subject_id or "system")[:64]
+            row.withdrawn_at = None
+            row.withdrawn_reason = None
+            session.add(self._new_review(
+                version_id=row.id, action="publish", from_status="staged", to_status="indexed",
+                actor_subject_id=actor_subject_id, comment=(comment or "").strip(),
+                is_override=is_override, request_id=request_id,
+            ))
+            session.flush()
+            return self._version_public(row)
+
+    def withdraw_document_version(self, *, document_id: int, version: int, actor_subject_id: str,
+                                  reason: str, request_id: str = "") -> dict:
+        cleaned = (reason or "").strip()
+        if not cleaned:
+            raise GovernanceError("withdraw_reason_required", "作废必须填写原因")
+        with self._sessions.begin() as session:
+            row = self._version_row(session, document_id, version)
+            if row.status != "indexed":
+                raise GovernanceError("invalid_state_transition", "只能作废当前已发布的版本")
+            row.status = "withdrawn"
+            row.withdrawn_at = datetime.now(timezone.utc)
+            row.withdrawn_reason = cleaned[:512]
+            session.add(self._new_review(
+                version_id=row.id, action="withdraw", from_status="indexed", to_status="withdrawn",
+                actor_subject_id=actor_subject_id, comment=cleaned, request_id=request_id,
+            ))
+            session.flush()
+            return self._version_public(row)
+
+    def rollback_document_version(self, *, document_id: int, version: int, actor_subject_id: str,
+                                  reason: str, request_id: str = "") -> dict:
+        cleaned = (reason or "").strip()
+        if not cleaned:
+            raise GovernanceError("rollback_reason_required", "回滚必须填写原因")
+        with self._sessions.begin() as session:
+            target = self._version_row(session, document_id, version)
+            if target.status not in {"superseded", "withdrawn"}:
+                raise GovernanceError("invalid_state_transition", "只能回滚到曾经发布过的历史版本")
+            previous_status = target.status
+            now = datetime.now(timezone.utc)
+            for other in session.scalars(select(DocumentVersionRecord).where(
+                DocumentVersionRecord.document_id == target.document_id,
+                DocumentVersionRecord.id != target.id,
+                DocumentVersionRecord.status == "indexed",
+            )).all():
+                other.status = "superseded"
+                other.superseded_by_version_id = target.id
+            # Historical chunks are kept, so a rollback never re-runs embeddings.
+            target.status = "indexed"
+            target.published_at = now
+            target.published_by_subject_id = (actor_subject_id or "system")[:64]
+            target.withdrawn_at = None
+            target.withdrawn_reason = None
+            target.superseded_by_version_id = None
+            session.add(self._new_review(
+                version_id=target.id, action="rollback", from_status=previous_status,
+                to_status="indexed", actor_subject_id=actor_subject_id, comment=cleaned,
+                request_id=request_id,
+            ))
+            session.flush()
+            return self._version_public(target)
+
+        def ratio(value):
+            return float(value) if value is not None else None
+
 
     def list_documents(self) -> list[dict]:
         statement = (
@@ -322,6 +772,14 @@ class QueryDatabase:
             "status": version.status,
             "chunk_count": version.chunk_count,
             "created_at": version.created_at.isoformat(),
+            "submitted_by_subject_id": version.submitted_by_subject_id,
+            "submitted_at": version.submitted_at.isoformat() if version.submitted_at else None,
+            "indexed_at": version.indexed_at.isoformat() if version.indexed_at else None,
+            "published_by_subject_id": version.published_by_subject_id,
+            "published_at": version.published_at.isoformat() if version.published_at else None,
+            "withdrawn_at": version.withdrawn_at.isoformat() if version.withdrawn_at else None,
+            "withdrawn_reason": version.withdrawn_reason,
+            "error_code": version.error_code,
         } for document, version in rows]
 
     def document_usage_ledger(self, version_id: int) -> list[dict]:
@@ -420,7 +878,7 @@ class QueryDatabase:
                        roles=(), groups=()) -> list[dict]:
         if self.backend == "postgresql":
             statement = text("""
-                SELECT c.id, d.title, v.version, c.ordinal, c.heading, c.page_number,
+                SELECT c.id, d.title, d.source_key, v.version, c.ordinal, c.heading, c.page_number,
                        c.content, ts_rank_cd(
                            c.search_vector, websearch_to_tsquery('simple', :query)
                        ) AS score
@@ -455,7 +913,7 @@ class QueryDatabase:
                                 subject_id: str, roles, groups) -> list[dict]:
         statement = text("""
             WITH eligible AS (
-                SELECT c.*, d.title, v.version
+                SELECT c.*, d.title, d.source_key, v.version
                 FROM document_chunks c
                 JOIN document_versions v ON v.id = c.document_version_id
                 JOIN documents d ON d.id = v.document_id
@@ -490,7 +948,8 @@ class QueryDatabase:
             ), candidates AS (
                 SELECT id FROM lexical UNION SELECT id FROM semantic
             )
-            SELECT e.id, e.title, e.version, e.ordinal, e.heading, e.page_number, e.content,
+            SELECT e.id, e.title, e.source_key, e.version, e.ordinal, e.heading, e.page_number,
+                   e.content,
                    l.lexical_rank, s.semantic_rank, s.similarity,
                    COALESCE(1.0 / (60 + l.lexical_rank), 0) +
                    COALESCE(1.0 / (60 + s.semantic_rank), 0) AS score
@@ -583,7 +1042,8 @@ class QueryDatabase:
                 (1 / (60 + lexical_rank[chunk.id])) if chunk.id in lexical_rank else 0
             ) + (1 / (60 + semantic_rank[chunk.id]))
             results.append({
-                "id": chunk.id, "title": document.title, "version": version,
+                "id": chunk.id, "title": document.title, "source_key": document.source_key,
+                "version": version,
                 "ordinal": chunk.ordinal, "heading": chunk.heading,
                 "page_number": chunk.page_number, "content": chunk.content,
                 "lexical_rank": lexical_rank.get(chunk.id),

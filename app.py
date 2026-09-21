@@ -65,6 +65,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         local_username=config.local_username,
         local_password_hash=config.local_password_hash.get_secret_value(),
         local_display_name=config.local_display_name,
+        local_roles=config.local_role_list,
         local_session_hours=config.local_session_hours,
         guest_session_hours=config.guest_session_hours,
     )

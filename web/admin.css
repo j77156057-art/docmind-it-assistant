@@ -11,3 +11,42 @@
 .model-section{grid-column:1/-1}.model-form{display:grid;grid-template-columns:minmax(260px,1fr) minmax(220px,.8fr) minmax(240px,1fr);gap:16px;padding:18px}.model-mode-options{grid-template-columns:repeat(3,1fr)}.model-details{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}.model-details div{padding:12px 14px;border-right:1px solid var(--line)}.model-details div:last-child{border-right:0}.model-details dt{font-size:10px;color:var(--muted);font-weight:650;text-transform:uppercase}.model-details dd{margin:4px 0 0;font-size:12px;overflow-wrap:anywhere}.model-actions{grid-column:1/-1;display:flex;justify-content:flex-end}.model-form>.field select{width:100%}
 .source-actions{display:flex;align-items:center;gap:8px;padding:12px 17px;border-bottom:1px solid var(--line)}.source-actions .secondary-button{height:32px;padding:0 10px;text-decoration:none;font-size:11px}.source-actions span{font-size:11px;color:var(--muted)}.model-runtime{grid-column:1/-1;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:11px;padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:#f8faf9}.model-runtime>i{width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 0 4px var(--red-soft)}.model-runtime>i.ok{background:#3c9b74;box-shadow:0 0 0 4px #e6f3ed}.model-runtime strong,.model-runtime span{display:block}.model-runtime strong{font-size:12px}.model-runtime span{margin-top:2px;color:var(--muted);font-size:11px}.model-runtime .secondary-button{height:32px;font-size:11px}
 @media(max-width:760px){.model-form{grid-template-columns:1fr}.model-details{grid-template-columns:1fr}.model-details div{border-right:0;border-bottom:1px solid var(--line)}.model-details div:last-child{border-bottom:0}}
+
+/* Knowledge governance (20260921-1) */
+.status-queued{background:#eef1f7;color:#41527a}
+.status-queued::before{background:#5a6f9e}
+.status-processing{background:var(--amber-soft);color:var(--amber)}
+.status-processing::before{background:#d68722}
+.status-staged{background:#eaf0fb;color:#2f4f8f}
+.status-staged::before{background:#3f6bc4}
+.status-rejected{background:var(--red-soft);color:var(--red)}
+.status-rejected::before{background:var(--red)}
+.status-withdrawn{background:#f2eeee;color:#7a5a5a}
+.status-withdrawn::before{background:#9c7676}
+.governance-block{border-top:1px solid var(--line);margin-top:14px;padding-top:14px}
+.governance-block .acl-heading{margin-bottom:8px}
+.version-list{display:flex;flex-direction:column;gap:8px;max-height:300px;overflow:auto}
+.version-item{border:1px solid var(--line);border-radius:6px;padding:9px 10px;display:flex;flex-direction:column;gap:6px}
+.version-item-head{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.version-item-meta{color:var(--muted);font-size:11px;line-height:1.5;word-break:break-all}
+.version-actions{display:flex;flex-wrap:wrap;gap:6px}
+.version-actions button{height:28px;padding:0 10px;font-size:12px}
+dialog.wide{width:min(780px,calc(100vw - 28px))}
+.preview-body{padding:16px 20px;display:flex;flex-direction:column;gap:12px;max-height:60vh;overflow:auto}
+.reason-hint{margin:0;color:var(--muted);font-size:12px}
+.chunk-list{display:flex;flex-direction:column;gap:8px}
+.chunk-item{border:1px solid var(--line);border-radius:6px;padding:9px 10px;background:#fbfcfc}
+.chunk-item strong{display:block;font-size:12px;margin-bottom:4px}
+.chunk-item pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#3c4744}
+
+/* Ingestion queue (20260921-2) */
+.status-running{background:#eaf0fb;color:#2f4f8f}
+.status-running::before{background:#3f6bc4}
+.status-succeeded{background:#e8f3ee;color:#25674f}
+.status-succeeded::before{background:#2c8b67}
+.status-cancelled{background:#eff1f0;color:#6a7470}
+.status-cancelled::before{background:#89918e}
+.job-filters{display:flex;align-items:center;gap:8px}
+.job-metrics{margin-bottom:14px}
+.jobs .reason-hint{margin:0 0 12px}
+

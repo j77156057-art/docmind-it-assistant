@@ -5,13 +5,45 @@ from datetime import datetime, timezone
 
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 from pgvector.sqlalchemy import Vector
 
 
 EMBEDDING_DIMENSION = 1024
+
+# Knowledge-governance vocabulary. Declared once and reused by the CHECK constraints below so a
+# new status cannot be added to the application without also constraining the database.
+# `indexed` keeps its original meaning: published and retrievable.
+VERSION_STATUSES = (
+    "queued",       # accepted, waiting for an indexing worker
+    "processing",   # parsing, chunking, embedding
+    "staged",       # indexed but NOT retrievable, waiting for review
+    "indexed",      # published and retrievable
+    "rejected",     # review declined
+    "withdrawn",    # published, then taken offline
+    "superseded",   # replaced by a newer published version
+    "failed",       # processing failed
+)
+REVIEW_ACTIONS = (
+    "submit", "reopen", "approve", "reject", "publish", "withdraw", "rollback", "override_gate",
+)
+# Statuses that may never be returned by any retrieval path.
+UNPUBLISHED_STATUSES = tuple(
+    status for status in VERSION_STATUSES if status != "indexed"
+)
+# Statuses that mean "a version with this content is already handled"; re-importing the same
+# content is a no-op for these.
+IN_FLIGHT_STATUSES = ("queued", "processing", "staged")
+
+
+def _in_clause(column: str, values: tuple[str, ...]) -> str:
+    return f"{column} IN (" + ", ".join(f"'{value}'" for value in values) + ")"
+
 
 
 class EmbeddingVector(TypeDecorator):
@@ -98,6 +130,8 @@ class DocumentVersionRecord(Base):
     __table_args__ = (
         UniqueConstraint("document_id", "version", name="uq_document_versions_number"),
         UniqueConstraint("document_id", "content_sha256", name="uq_document_versions_hash"),
+        CheckConstraint(_in_clause("status", VERSION_STATUSES), name="ck_document_versions_status"),
+        Index("ix_document_versions_status_submitted", "status", "submitted_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -113,6 +147,44 @@ class DocumentVersionRecord(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
     )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Governance pointers. The approval chain itself lives in document_version_reviews.
+    submitted_by_subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_by_subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    withdrawn_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    superseded_by_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True,
+    )
+
+
+class DocumentVersionReviewRecord(Base):
+    """Append-only knowledge-governance decision trail.
+
+    Distinct from ``audit_events``: audit answers "who touched what", this answers
+    "why is this version allowed to be live".
+    """
+
+    __tablename__ = "document_version_reviews"
+    __table_args__ = (
+        CheckConstraint(_in_clause("action", REVIEW_ACTIONS), name="ck_document_version_reviews_action"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_version_id: Mapped[int] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    action: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    from_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_subject_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    comment: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    is_override: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True,
+    )
 
 
 class DocumentChunkRecord(Base):

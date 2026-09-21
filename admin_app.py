@@ -18,7 +18,8 @@ from starlette.concurrency import run_in_threadpool
 from backend import (
     AppSettings, AuthenticationError, EmbeddingClient, OIDCAuthenticator, Principal,
     DocumentSourceStore, ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase,
-    build_embedding_client, configure_logging, log_event, request_id_context,
+    GovernanceError, HybridRetriever, build_embedding_client, configure_logging, log_event,
+    request_id_context,
 )
 from ingestion import DocumentIngestionService
 from backend.artifacts import ARTIFACT_MEDIA_TYPES, ArtifactError, ArtifactService
@@ -61,6 +62,23 @@ class ModelConfigReq(BaseModel):
     api_key: str = Field(default="", max_length=512)
 
 
+class ReviewDecisionReq(BaseModel):
+    decision: Literal["approve", "reject"]
+    comment: str = Field(default="", max_length=1000)
+    override: bool = False
+
+
+class PublishReq(BaseModel):
+    comment: str = Field(default="", max_length=1000)
+    override: bool = False
+
+
+class ReasonReq(BaseModel):
+    reason: str = Field(min_length=1, max_length=512)
+
+
+
+
 def create_admin_app(settings: AppSettings | None = None,
                      embedding_client: EmbeddingClient | None = None,
                      model_runtime: ModelRuntime | None = None) -> FastAPI:
@@ -83,6 +101,7 @@ def create_admin_app(settings: AppSettings | None = None,
         chunk_overlap_chars=config.chunk_overlap_chars,
         max_characters=config.document_max_characters,
         max_pages=config.document_max_pages,
+        require_review=config.governance_mode == "review",
     )
     authenticator = OIDCAuthenticator(
         mode=config.auth_mode,
@@ -96,6 +115,7 @@ def create_admin_app(settings: AppSettings | None = None,
         local_username=config.local_username,
         local_password_hash=config.local_password_hash.get_secret_value(),
         local_display_name=config.local_display_name,
+        local_roles=config.local_role_list,
         local_session_hours=config.local_session_hours,
         guest_session_hours=config.guest_session_hours,
     )
@@ -147,16 +167,35 @@ def create_admin_app(settings: AppSettings | None = None,
                 headers={"WWW-Authenticate": "Bearer"},
             ) from None
 
-    def require_role(role: str):
+    def require_capability(capability: str):
         def authorize(principal: Principal = Depends(authenticated)) -> Principal:
-            if not principal.allows(role):
-                log_event(LOGGER, logging.WARNING, "admin_authorization_denied", reason=role)
+            if not principal.has_capability(capability):
+                log_event(LOGGER, logging.WARNING, "admin_authorization_denied", reason=capability)
                 raise HTTPException(status_code=403, detail="权限不足")
             return principal
         return authorize
 
-    auditor = require_role("auditor")
-    admin = require_role("admin")
+    def governance_override_allowed(principal: Principal, requested: bool) -> bool:
+        """Admin override is opt-in twice: by configuration and by an explicit request flag."""
+        return bool(
+            requested and config.governance_allow_admin_override
+            and principal.has_capability("governance.override")
+        )
+
+    def governance_http_error(exc: GovernanceError) -> HTTPException:
+        if exc.code in {
+            "separation_of_duties_violation", "review_approval_required",
+            "access_scope_change_requires_acl",
+        }:
+            return HTTPException(status_code=403, detail=str(exc))
+        if exc.code in {
+            # State conflicts: the request is authorised but the resource is not in a state that
+            # permits the action.
+            "invalid_state_transition", "job_already_running", "job_already_active",
+            "job_not_cancellable", "evaluation_case_in_use",
+        }:
+            return HTTPException(status_code=409, detail=str(exc))
+        return HTTPException(status_code=400, detail=str(exc))
 
     @application.middleware("http")
     async def request_boundary(request: Request, call_next):
@@ -284,22 +323,32 @@ def create_admin_app(settings: AppSettings | None = None,
         }
         ready = all(item["ok"] for item in checks.values())
         return JSONResponse(
-            {"ok": ready, "status": "ready" if ready else "not_ready", "checks": checks},
+            {
+                "ok": ready,
+                "status": "ready" if ready else "not_ready",
+                "checks": checks,
+            },
             status_code=200 if ready else 503,
         )
 
     @application.get("/api/me")
-    async def me(principal: Principal = Depends(auditor)):
+    async def me(principal: Principal = Depends(require_capability("document.read"))):
         return {
             "ok": True,
             "subject_id": principal.subject_id,
             "display_name": principal.display_name,
             "roles": sorted(principal.roles),
             "groups": sorted(principal.groups),
+            "capabilities": sorted(principal.capabilities),
+            "governance_mode": config.governance_mode,
+            "governance_require_separation_of_duties":
+                config.governance_require_separation_of_duties,
+            "governance_override_allowed": config.governance_allow_admin_override
+            and principal.has_capability("governance.override"),
         }
 
     @application.get("/api/admin/documents")
-    async def documents(_principal: Principal = Depends(auditor)):
+    async def documents(_principal: Principal = Depends(require_capability("document.read"))):
         items = []
         for item in database.list_documents():
             if item["source_key"] == "builtin/knowledge.md" and item["version"] == 1:
@@ -331,7 +380,7 @@ def create_admin_app(settings: AppSettings | None = None,
     @application.get("/api/admin/documents/{document_id}/versions/{version}/source")
     async def document_source(document_id: int, version: int,
                               download: bool = Query(False),
-                              principal: Principal = Depends(auditor)):
+                              principal: Principal = Depends(require_capability("document.read"))):
         item = next((row for row in database.list_documents()
                      if row["document_id"] == document_id and row["version"] == version), None)
         source = _document_source(item) if item else None
@@ -358,7 +407,8 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/admin/documents/{document_id}/acl")
-    async def document_acl(document_id: int, _principal: Principal = Depends(auditor)):
+    async def document_acl(document_id: int,
+                           _principal: Principal = Depends(require_capability("document.read"))):
         try:
             return {"ok": True, **database.document_access(document_id)}
         except ValueError as exc:
@@ -366,7 +416,7 @@ def create_admin_app(settings: AppSettings | None = None,
 
     @application.put("/api/admin/documents/{document_id}/acl")
     async def replace_document_acl(document_id: int, payload: DocumentAclReq,
-                                   principal: Principal = Depends(admin)):
+                                   principal: Principal = Depends(require_capability("acl.write"))):
         try:
             database.set_document_acl(
                 document_id,
@@ -379,12 +429,169 @@ def create_admin_app(settings: AppSettings | None = None,
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
 
+    @application.get("/api/admin/governance/pending")
+    async def governance_pending(limit: int = Query(100, ge=1, le=200),
+                                 _principal: Principal = Depends(
+                                     require_capability("document.review"))):
+        return {"ok": True, "items": database.pending_review_versions(limit)}
+
+    @application.get("/api/admin/documents/{document_id}/versions/{version}/reviews")
+    async def version_reviews(document_id: int, version: int,
+                              _principal: Principal = Depends(
+                                  require_capability("document.read"))):
+        try:
+            items = database.document_version_reviews(document_id, version)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        return {"ok": True, "items": items}
+
+    @application.get("/api/admin/documents/{document_id}/versions/{version}/preview")
+    async def version_preview(document_id: int, version: int,
+                              limit: int = Query(200, ge=1, le=500),
+                              principal: Principal = Depends(
+                                  require_capability("document.review"))):
+        """Reviewer preview. Bypasses document ACL, so every read is audited."""
+        try:
+            payload = database.document_version_chunks(document_id, version, limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="document_version_preview",
+            target_type="document",
+            target_ref=f"{document_id}:v{version}",
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True, **payload}
+
+    @application.post("/api/admin/documents/{document_id}/versions/{version}/review")
+    async def review_version(document_id: int, version: int, payload: ReviewDecisionReq,
+                             principal: Principal = Depends(
+                                 require_capability("document.review"))):
+        try:
+            state = database.review_document_version(
+                document_id=document_id,
+                version=version,
+                decision=payload.decision,
+                actor_subject_id=principal.subject_id,
+                comment=payload.comment,
+                request_id=request_id_context.get(),
+                require_separation_of_duties=config.governance_require_separation_of_duties,
+                allow_override=governance_override_allowed(principal, payload.override),
+            )
+        except GovernanceError as exc:
+            database.record_audit_event(
+                actor_subject_id=principal.subject_id,
+                action=f"document_review_{payload.decision}",
+                target_type="document",
+                target_ref=f"{document_id}:v{version}",
+                result="failed",
+                request_id=request_id_context.get(),
+            )
+            raise governance_http_error(exc) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action=f"document_review_{payload.decision}",
+            target_type="document",
+            target_ref=f"{document_id}:v{version}",
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True, "version": state}
+
+    @application.post("/api/admin/documents/{document_id}/versions/{version}/publish")
+    async def publish_version(document_id: int, version: int, payload: PublishReq,
+                              principal: Principal = Depends(
+                                  require_capability("document.publish"))):
+        request_id = request_id_context.get()
+        # Bypassing the quality gate needs the publish capability AND the override capability, plus
+        # its own configuration switch: being allowed to publish is not the same as being allowed
+        # to ignore measurements, and that policy is independent of separation of duties.
+        try:
+            state = database.publish_document_version(
+                document_id=document_id,
+                version=version,
+                actor_subject_id=principal.subject_id,
+                comment=payload.comment,
+                request_id=request_id,
+                allow_override=governance_override_allowed(principal, payload.override),
+            )
+        except GovernanceError as exc:
+            raise governance_http_error(exc) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="document_publish",
+            target_type="document",
+            target_ref=f"{document_id}:v{version}",
+            result="success",
+            request_id=request_id,
+        )
+        return {"ok": True, "version": state}
+
+    @application.post("/api/admin/documents/{document_id}/versions/{version}/withdraw")
+    async def withdraw_version(document_id: int, version: int, payload: ReasonReq,
+                               principal: Principal = Depends(
+                                   require_capability("document.withdraw"))):
+        try:
+            state = database.withdraw_document_version(
+                document_id=document_id,
+                version=version,
+                actor_subject_id=principal.subject_id,
+                reason=payload.reason,
+                request_id=request_id_context.get(),
+            )
+        except GovernanceError as exc:
+            raise governance_http_error(exc) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="document_withdraw",
+            target_type="document",
+            target_ref=f"{document_id}:v{version}",
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True, "version": state}
+
+    @application.post("/api/admin/documents/{document_id}/versions/{version}/rollback")
+    async def rollback_version(document_id: int, version: int, payload: ReasonReq,
+                               principal: Principal = Depends(
+                                   require_capability("document.rollback"))):
+        try:
+            state = database.rollback_document_version(
+                document_id=document_id,
+                version=version,
+                actor_subject_id=principal.subject_id,
+                reason=payload.reason,
+                request_id=request_id_context.get(),
+            )
+        except GovernanceError as exc:
+            raise governance_http_error(exc) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="document_rollback",
+            target_type="document",
+            target_ref=f"{document_id}:v{version}",
+            result="success",
+            request_id=request_id_context.get(),
+        )
+        return {"ok": True, "version": state}
+
     @application.get("/api/admin/audit-events")
-    async def audit_events(limit: int = 100, _principal: Principal = Depends(auditor)):
+    async def audit_events(limit: int = 100,
+                           _principal: Principal = Depends(require_capability("audit.read"))):
         return {"ok": True, "items": database.audit_events(limit)}
 
     @application.get("/api/admin/model-config")
-    async def model_config(_principal: Principal = Depends(auditor)):
+    async def model_config(_principal: Principal = Depends(require_capability("usage.read"))):
         active = models.status()
         runtime_status = await run_in_threadpool(
             runtime.status, active, models.base_url({**active, "route": active["mode"]}),
@@ -426,7 +633,7 @@ def create_admin_app(settings: AppSettings | None = None,
 
     @application.put("/api/admin/model-config")
     async def update_model_config(payload: ModelConfigReq,
-                                  principal: Principal = Depends(admin)):
+                                  principal: Principal = Depends(require_capability("model.write"))):
         response_strategy = payload.response_strategy or models.response_strategy()
         target_ref = f"{payload.mode}:{payload.provider}:{payload.model}:{response_strategy}"
         try:
@@ -479,12 +686,12 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.get("/api/admin/artifacts")
-    async def list_artifacts(_principal: Principal = Depends(auditor)):
+    async def list_artifacts(_principal: Principal = Depends(require_capability("artifact.read"))):
         return {"ok": True, "items": await run_in_threadpool(artifacts.list)}
 
     @application.post("/api/admin/artifacts")
     async def create_artifact(payload: ArtifactCreateReq,
-                              principal: Principal = Depends(admin)):
+                              principal: Principal = Depends(require_capability("artifact.write"))):
         request_id = request_id_context.get()
         target_ref = payload.filename
         try:
@@ -511,7 +718,8 @@ def create_admin_app(settings: AppSettings | None = None,
             raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @application.get("/api/admin/artifacts/{filename}")
-    async def download_artifact(filename: str, _principal: Principal = Depends(auditor)):
+    async def download_artifact(filename: str,
+                                _principal: Principal = Depends(require_capability("artifact.read"))):
         try:
             target = artifacts.resolve(filename)
         except ArtifactError as exc:
@@ -529,7 +737,7 @@ def create_admin_app(settings: AppSettings | None = None,
         source_key: str = Form(""),
         access_scope: str = Form("restricted"),
         classification: str = Form("internal"),
-        principal: Principal = Depends(admin),
+        principal: Principal = Depends(require_capability("document.write")),
     ):
         filename = Path(file.filename or "document").name
         suffix = Path(filename).suffix.lower()
@@ -556,6 +764,8 @@ def create_admin_app(settings: AppSettings | None = None,
                     source_key=source,
                     access_scope=access_scope,
                     classification=classification,
+                    submitted_by_subject_id=principal.subject_id,
+                    request_id=request_id,
                 )
                 await run_in_threadpool(
                     sources.store,
@@ -564,15 +774,30 @@ def create_admin_app(settings: AppSettings | None = None,
                     version=result["version"],
                     filename=filename,
                 )
+                database.record_audit_event(
+                    actor_subject_id=principal.subject_id,
+                    action="document_import",
+                    target_type="document",
+                    target_ref=source,
+                    result="success",
+                    request_id=request_id,
+                )
+                return {
+                    "ok": True,
+                    **result,
+                    "governance_mode": config.governance_mode,
+                    "review_required": result.get("status") == "staged",
+                }
+        except GovernanceError as exc:
             database.record_audit_event(
                 actor_subject_id=principal.subject_id,
                 action="document_import",
                 target_type="document",
                 target_ref=source,
-                result="success",
+                result="failed",
                 request_id=request_id,
             )
-            return {"ok": True, **result}
+            raise governance_http_error(exc) from None
         except ValueError as exc:
             database.record_audit_event(
                 actor_subject_id=principal.subject_id,

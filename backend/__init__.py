@@ -1,6 +1,9 @@
 from .config import AppSettings
-from .auth import AuthenticationError, OIDCAuthenticator, Principal, subject_identifier
-from .database import QueryDatabase
+from .auth import (
+    GOVERNANCE_ROLES, KNOWN_ROLES, ROLE_CAPABILITIES, ROLE_LEVELS,
+    AuthenticationError, OIDCAuthenticator, Principal, subject_identifier,
+)
+from .database import GovernanceError, QueryDatabase
 from .document_sources import DocumentSourceError, DocumentSourceStore
 from .embeddings import EmbeddingClient, EmbeddingError, EmbeddingResult, build_embedding_client
 from .logging_config import JsonFormatter, configure_logging, log_event, request_id_context
@@ -13,6 +16,8 @@ from .providers import PROVIDERS, ProviderSpec, get_provider, model_context_wind
 
 __all__ = [
     "AppSettings", "AuthenticationError", "OIDCAuthenticator", "Principal",
+    "GOVERNANCE_ROLES", "KNOWN_ROLES", "ROLE_CAPABILITIES", "ROLE_LEVELS",
+    "GovernanceError",
     "ModelRouter", "QueryDatabase", "PROVIDERS", "ProviderSpec",
     "DocumentSourceError", "DocumentSourceStore", "ModelRuntime", "ModelRuntimeError",
     "JsonFormatter", "configure_logging", "log_event", "request_id_context",
