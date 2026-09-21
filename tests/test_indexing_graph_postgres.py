@@ -101,33 +101,37 @@ class FlakyEmbeddingClient(CountingEmbeddingClient):
 @unittest.skipUnless(POSTGRES_URL, "IT_TEST_POSTGRES_URL is not set")
 @unittest.skipUnless(langgraph_available(), "worker extras are not installed")
 class PostgresCheckpointTests(unittest.TestCase):
-    """One disposable database for the class; dropped in tearDownClass."""
+    """A disposable database per test.
 
-    database_name = ""
-    database_url = ""
+    Sharing one database across tests couples them through content-keyed behaviour: importing
+    the same document twice is a no-op by design (``uq_document_versions_hash``), so a second
+    test would get a duplicate response instead of a queued one. One database per test removes
+    every shared-state assumption, at the cost of one extra migration run.
+    """
 
-    @classmethod
-    def setUpClass(cls):
+    def setUp(self):
         if not POSTGRES_URL.startswith("postgresql"):
-            raise unittest.SkipTest("IT_TEST_POSTGRES_URL must be a postgresql:// URL")
-        # A name unique per process keeps parallel runs and leftovers from colliding.
-        cls.database_name = f"docmind_it_test_{os.getpid()}_{os.urandom(3).hex()}"
-        cls.database_url = server_url(POSTGRES_URL, cls.database_name)
+            self.skipTest("IT_TEST_POSTGRES_URL must be a postgresql:// URL")
+        self.database_name = f"docmind_it_test_{os.getpid()}_{os.urandom(3).hex()}"
+        self.database_url = server_url(POSTGRES_URL, self.database_name)
         with connect(server_url(POSTGRES_URL, "postgres")) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(f'CREATE DATABASE "{cls.database_name}"')
+                cursor.execute(f'CREATE DATABASE "{self.database_name}"')
+        self.alembic_config = Config(str(ROOT / "alembic.ini"))
+        self.alembic_config.attributes["database_url"] = self.database_url
+        command.upgrade(self.alembic_config, "head")
 
-    @classmethod
-    def tearDownClass(cls):
-        if not cls.database_name:
+    def tearDown(self):
+        if not self.database_name:
             return
         with connect(server_url(POSTGRES_URL, "postgres")) as connection:
             with connection.cursor() as cursor:
                 try:
                     # PostgreSQL 13+ can evict leftover sessions instead of refusing to drop.
-                    cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
+                    cursor.execute(f'DROP DATABASE IF EXISTS "{self.database_name}" WITH (FORCE)')
                 except Exception:  # noqa: BLE001 - fall back on older servers
-                    cursor.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}"')
+                    cursor.execute(f'DROP DATABASE IF EXISTS "{self.database_name}"')
+        self.database_name = ""
 
     # -- helpers ---------------------------------------------------------------
     def make_settings(self, root: str, *, engine: str = "langgraph") -> AppSettings:
@@ -152,12 +156,6 @@ class PostgresCheckpointTests(unittest.TestCase):
             ingestion_engine=engine,
         )
 
-    def migrated(self) -> Config:
-        config = Config(str(ROOT / "alembic.ini"))
-        config.attributes["database_url"] = self.database_url
-        command.upgrade(config, "head")
-        return config
-
     def worker_with_client(self, settings: AppSettings, client: EmbeddingClient):
         database = QueryDatabase(settings.database_url)
         ingestion = DocumentIngestionService(
@@ -181,7 +179,9 @@ class PostgresCheckpointTests(unittest.TestCase):
             "/api/admin/documents/import",
             headers={"X-Auth-Subject": "editor-1", "X-Auth-Roles": "knowledge_editor"},
             files={"file": ("printer.md", CONTENT.encode("utf-8"), "text/markdown")},
-            data={"source_key": "manual/printer", "access_scope": "public",
+            # Keyed by test name: re-importing identical content is a deliberate no-op, so a
+            # shared key would turn a second test's import into a duplicate response.
+            data={"source_key": f"manual/{self._testMethodName}", "access_scope": "public",
                   "classification": "internal"},
         )
         self.assertEqual(response.status_code, 202, response.text)
@@ -225,7 +225,7 @@ class PostgresCheckpointTests(unittest.TestCase):
     # -- tests -----------------------------------------------------------------
     def test_checkpointed_indexing_runs_on_postgres_and_stays_out_of_the_app_schema(self):
         with tempfile.TemporaryDirectory() as root:
-            alembic_config = self.migrated()
+            alembic_config = self.alembic_config
             settings = self.make_settings(root)
             application = create_admin_app(settings)
             database = QueryDatabase(settings.database_url)
@@ -260,7 +260,7 @@ class PostgresCheckpointTests(unittest.TestCase):
 
     def test_resume_over_postgres_does_not_re_embed_finished_batches(self):
         with tempfile.TemporaryDirectory() as root:
-            alembic_config = self.migrated()
+            alembic_config = self.alembic_config
             settings = self.make_settings(root)
             application = create_admin_app(settings)
             database = QueryDatabase(settings.database_url)
