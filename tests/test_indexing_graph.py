@@ -85,6 +85,9 @@ class IndexingGraphTests(unittest.TestCase):
             ingestion_worker_enabled=True,
             ingestion_engine=engine,
             ingestion_checkpoint_path=project / "data" / "worker-checkpoints.db",
+            # Retry backoff is exercised in test_ingestion_backoff; checkpoint-resume tests need
+            # the requeued job to be claimable immediately, so disable the delay here.
+            ingestion_backoff_max_seconds=0,
         )
 
     @staticmethod

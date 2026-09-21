@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 import math
 import base64
 import hashlib
+import logging
+import time
 
-from sqlalchemy import and_, case, create_engine, func, inspect, or_, select, text, update
+from sqlalchemy import and_, case, create_engine, event as sa_event, func, inspect, or_, select, text, update
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -30,6 +32,9 @@ from .auth import (
 )
 from .pricing import cost_cny, pricing_status
 from .text_index import lexical_text, lexical_terms
+from .logging_config import log_event
+
+LOGGER = logging.getLogger("docmind.it.db")
 
 
 def _database_url(value: str) -> str:
@@ -52,8 +57,10 @@ class QueryDatabase:
     """Repository boundary; PostgreSQL schema ownership remains with Alembic."""
 
     def __init__(self, url_or_path: str, *, pool_size: int = 5, max_overflow: int = 10,
-                 pool_timeout: int = 30, connect_timeout: int = 5, secret_key: str = ""):
+                 pool_timeout: int = 30, connect_timeout: int = 5, secret_key: str = "",
+                 slow_db_ms: int = 200):
         self.url = _database_url(str(url_or_path))
+        self._slow_db_ms = max(0, int(slow_db_ms))
         url = make_url(self.url)
         engine_options: dict = {"pool_pre_ping": True}
         if url.get_backend_name() == "sqlite":
@@ -73,10 +80,32 @@ class QueryDatabase:
         self._sessions = sessionmaker(bind=self.engine, expire_on_commit=False)
         digest = hashlib.sha256((secret_key or "development-only").encode("utf-8")).digest()
         self._credential_cipher = Fernet(base64.urlsafe_b64encode(digest))
+        self._attach_slow_query_listener()
 
     @property
     def backend(self) -> str:
         return self.engine.url.get_backend_name()
+
+    def _attach_slow_query_listener(self) -> None:
+        """Log queries slower than ``slow_db_ms``; the threshold is operational, not a failure."""
+        if self._slow_db_ms <= 0:
+            return
+
+        @sa_event.listens_for(self.engine, "before_cursor_execute")
+        def _before_cursor(conn, _cursor, _statement, _parameters, _context, _executemany):
+            conn.info["query_start"] = time.perf_counter()
+
+        @sa_event.listens_for(self.engine, "after_cursor_execute")
+        def _after_cursor(conn, _cursor, statement, _parameters, _context, _executemany):
+            start = conn.info.pop("query_start", None)
+            if start is None:
+                return
+            took = (time.perf_counter() - start) * 1000
+            if took >= self._slow_db_ms:
+                log_event(
+                    LOGGER, logging.WARNING, "slow_db_query",
+                    duration_ms=round(took, 2), op=(statement or "").strip()[:80],
+                )
 
     def initialize(self) -> None:
         """Create only disposable SQLite schemas; PostgreSQL uses Alembic exclusively."""
@@ -850,6 +879,29 @@ class QueryDatabase:
             "version": version.version if version is not None else None,
             "version_status": version.status if version is not None else None,
         } for job, document, version in rows]
+
+    def count_ingestion_jobs(self, status: str | None = None) -> int:
+        with self._sessions() as session:
+            statement = select(func.count()).select_from(IngestionJobRecord)
+            if status:
+                statement = statement.where(IngestionJobRecord.status == status)
+            return int(session.scalar(statement) or 0)
+
+    def model_usage_totals(self) -> dict:
+        """Aggregate model spend from the usage ledger for the metrics endpoint."""
+        with self._sessions() as session:
+            row = session.query(
+                func.count(ModelUsageRecord.id),
+                func.coalesce(func.sum(ModelUsageRecord.prompt_tokens), 0),
+                func.coalesce(func.sum(ModelUsageRecord.completion_tokens), 0),
+                func.coalesce(func.sum(ModelUsageRecord.cost_cny), 0.0),
+            ).one()
+            return {
+                "calls": int(row[0] or 0),
+                "prompt_tokens": int(row[1] or 0),
+                "completion_tokens": int(row[2] or 0),
+                "cost_cny": float(row[3] or 0.0),
+            }
 
     def retry_ingestion_job(self, job_id: int, *, actor_subject_id: str = "") -> dict:
         with self._sessions.begin() as session:

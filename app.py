@@ -18,6 +18,7 @@ from backend import (
     ModelGatewayError, ModelRouter, OIDCAuthenticator, Principal, QueryDatabase,
     build_embedding_client, configure_logging, log_event, request_id_context,
 )
+from backend.metrics import get_metrics
 
 
 LOGGER = logging.getLogger("docmind.it")
@@ -40,6 +41,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         max_overflow=config.database_max_overflow,
         pool_timeout=config.database_pool_timeout,
         connect_timeout=config.database_connect_timeout,
+        slow_db_ms=config.slow_db_ms,
         secret_key=config.auth_subject_salt.get_secret_value(),
     )
     models = ModelRouter.from_settings(
@@ -164,6 +166,16 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
                 LOGGER, logging.INFO, "request_completed", method=request.method,
                 path=request.url.path, status_code=response.status_code, duration_ms=duration,
             )
+            metrics = get_metrics()
+            metrics.inc_request(request.method, request.url.path, response.status_code)
+            metrics.observe_request_duration(duration)
+            if duration >= config.slow_request_ms:
+                log_event(
+                    LOGGER, logging.WARNING, "slow_request",
+                    method=request.method, path=request.url.path,
+                    status_code=response.status_code, duration_ms=duration,
+                    threshold_ms=config.slow_request_ms,
+                )
             return response
         finally:
             request_id_context.reset(context_token)

@@ -381,6 +381,7 @@ class IngestionJobRecord(Base):
         # row instead of stacking duplicates.
         UniqueConstraint("job_type", "version_id", name="uq_ingestion_jobs_target"),
         Index("ix_ingestion_jobs_claim", "status", "priority", "id"),
+        Index("ix_ingestion_jobs_claim2", "status", "next_attempt_at", "priority", "id"),
         Index("ix_ingestion_jobs_created_at", "created_at"),
     )
 

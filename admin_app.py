@@ -27,6 +27,7 @@ from backend import (
     ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase, build_embedding_client,
     configure_logging, log_event, normalize_classification, request_id_context,
 )
+from backend.metrics import get_metrics
 from ingestion import DocumentIngestionService
 from backend.artifacts import ARTIFACT_MEDIA_TYPES, ArtifactError, ArtifactService
 
@@ -110,6 +111,7 @@ def create_admin_app(settings: AppSettings | None = None,
         max_overflow=config.database_max_overflow,
         pool_timeout=config.database_pool_timeout,
         connect_timeout=config.database_connect_timeout,
+        slow_db_ms=config.slow_db_ms,
         secret_key=config.auth_subject_salt.get_secret_value(),
     )
     embeddings = embedding_client or build_embedding_client(config)
@@ -260,12 +262,22 @@ def create_admin_app(settings: AppSettings | None = None,
                 "default-src 'self'; img-src 'self' data:; style-src 'self'; "
                 "script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
             )
+            duration = round((time.perf_counter() - started) * 1000, 2)
             log_event(
                 LOGGER, logging.INFO, "admin_request_completed",
                 method=request.method, path=request.url.path,
-                status_code=response.status_code,
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                status_code=response.status_code, duration_ms=duration,
             )
+            if duration >= config.slow_request_ms:
+                log_event(
+                    LOGGER, logging.WARNING, "slow_admin_request",
+                    method=request.method, path=request.url.path,
+                    status_code=response.status_code, duration_ms=duration,
+                    threshold_ms=config.slow_request_ms,
+                )
+            metrics = get_metrics()
+            metrics.inc_request(request.method, request.url.path, response.status_code)
+            metrics.observe_request_duration(duration)
             return response
         finally:
             request_id_context.reset(token)
@@ -984,6 +996,15 @@ def create_admin_app(settings: AppSettings | None = None,
             media_type=media_type,
             headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
+
+    @application.get("/api/admin/metrics")
+    async def metrics(_principal: Principal = Depends(require_capability("audit.read"))):
+        """Process-local observability snapshot: request counts/latency, queue depth, model spend."""
+        snapshot = get_metrics().snapshot()
+        snapshot["ingestion_queue_depth"] = database.count_ingestion_jobs(status="queued")
+        snapshot["ingestion_jobs_failed"] = database.count_ingestion_jobs(status="failed")
+        snapshot["model_usage"] = database.model_usage_totals()
+        return {"ok": True, **snapshot}
 
     @application.get("/api/admin/model-config")
     async def model_config(_principal: Principal = Depends(require_capability("usage.read"))):

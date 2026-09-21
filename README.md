@@ -133,6 +133,7 @@ IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 | `GET/PUT` | `/api/admin/model-config` | auditor/admin | 查看或切换运行时模型与回答策略 |
 | `GET` | `/api/admin/audit-events` | auditor | 查看管理审计记录 |
 | `GET` | `/api/admin/audit-events/export` | auditor | 导出审计事件为 CSV/JSON（支持 `start`/`end`/`action`/`target_type`/`actor` 筛选，导出动作本身写审计） |
+| `GET` | `/api/admin/metrics` | auditor | 进程内可观测性快照：请求计数/延迟分位、 ingestion 队列深度、失败数与模型费用汇总 |
 | `GET` | `/api/admin/governance/pending` | `document.review` | 查看待审核版本 |
 | `GET` | `/api/admin/documents/{id}/versions/{v}/preview` | `document.review` | 审核预览该版本的内容块（每次读取写审计） |
 | `POST` | `/api/admin/documents/{id}/versions/{v}/review` | `document.review` | 通过或驳回（驳回必须填写意见） |
@@ -218,6 +219,9 @@ IT_INGESTION_POLL_SECONDS=2
 IT_INGESTION_MAX_ATTEMPTS=3
 IT_INGESTION_JOB_TIMEOUT_SECONDS=600
 IT_INGESTION_HEARTBEAT_SECONDS=30
+IT_INGESTION_BACKOFF_MAX_SECONDS=1800
+IT_SLOW_REQUEST_MS=1000
+IT_SLOW_DB_MS=200
 ```
 
 ```powershell
@@ -230,7 +234,7 @@ IT_INGESTION_HEARTBEAT_SECONDS=30
 - **心跳与回收**：Worker 在每个步骤后写心跳；超过 `IT_INGESTION_JOB_TIMEOUT_SECONDS` 未心跳的任务被回收重排，尝试次数用尽则判为失败。`IT_INGESTION_HEARTBEAT_SECONDS` 必须小于任务超时，配置层会拒绝非法组合。
 - **失败分类**：`embedding_timeout`、`embedding_unavailable`、HTTP 429/5xx 属可重试，自动重排；解析失败、配置错误、文件缺失属确定性失败，立即终止并写入 `last_error_code`。重试次数用尽后由管理员在任务视图人工决定是否重试。
 - **隐私**：任务表只存业务元数据（版本、发起人、请求号），不存文档正文。
-- **可观测**：`/health/ready` 返回 `ingestion` 诊断块（`stalled`、`queued`、`running`、`failed`）。它**刻意不放进 `checks`**：队列停滞意味着"没有 Worker 在消费"，重启 Pod 解决不了，因此不应让就绪探针失败。
+- **可观测**：`/health/ready` 返回 `ingestion` 诊断块（`stalled`、`queued`、`running`、`failed`）。它**刻意不放进 `checks`**：队列停滞意味着"没有 Worker 在消费"，重启 Pod 解决不了，因此不应让就绪探针失败。进程内指标（请求计数/延迟分位、ingestion 队列深度/失败数、模型费用汇总）由 `GET /api/admin/metrics` 暴露，多 Worker 部署时由各实例轮询后外部抓取；慢请求（>`IT_SLOW_REQUEST_MS`）与慢查询（>`IT_SLOW_DB_MS`）会写 `WARNING` 日志便于排查。并发压测用 `scripts/bench_concurrency.py`（离线、无网络）。
 - **Worker 与治理模式共用配置**：`direct` 模式下索引完成即发布，`review` 模式下停在 `staged` 等审批。
 
 ### 断点续跑引擎（可选）
