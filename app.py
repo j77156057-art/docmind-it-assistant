@@ -6,12 +6,14 @@ import re
 import time
 import uuid
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from assistant import ITQueryService
 from backend import (
+    OIDC_FLOW_COOKIE, OIDC_FLOW_SECONDS, SESSION_COOKIE,
     AppSettings, AuthenticationError, EmbeddingClient, HybridRetriever, ModelGateway,
     ModelGatewayError, ModelRouter, OIDCAuthenticator, Principal, QueryDatabase,
     build_embedding_client, configure_logging, log_event, request_id_context,
@@ -28,7 +30,8 @@ class QueryReq(BaseModel):
 
 
 def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway | None = None,
-               embedding_client: EmbeddingClient | None = None) -> FastAPI:
+               embedding_client: EmbeddingClient | None = None,
+               auth_transport: httpx.BaseTransport | None = None) -> FastAPI:
     config = settings or AppSettings.from_environment()
     configure_logging(config)
     database = QueryDatabase(
@@ -68,6 +71,16 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         local_roles=config.local_role_list,
         local_session_hours=config.local_session_hours,
         guest_session_hours=config.guest_session_hours,
+        client_id=config.oidc_client_id,
+        client_secret=config.oidc_client_secret.get_secret_value(),
+        redirect_uri=config.oidc_redirect_uri,
+        scopes=config.oidc_scope_list,
+        session_hours=config.oidc_session_hours,
+        timeout_seconds=config.oidc_timeout_seconds,
+        authorization_endpoint=config.oidc_authorization_endpoint,
+        token_endpoint=config.oidc_token_endpoint,
+        end_session_url=config.oidc_end_session_url,
+        http_transport=auth_transport,
     )
 
     @asynccontextmanager
@@ -173,8 +186,62 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
 
     @application.get("/api/auth/config")
     async def auth_config():
-        return {"ok": True, "mode": config.auth_mode, "login_required": config.auth_mode == "local",
-                "guest_enabled": config.guest_login_enabled and config.auth_mode == "local"}
+        return {
+            "ok": True,
+            "mode": config.auth_mode,
+            "login_required": config.auth_mode in {"local", "oidc"},
+            "local_login": config.auth_mode == "local",
+            "sso_login": authenticator.login_enabled,
+            "guest_enabled": config.guest_login_enabled and config.auth_mode == "local",
+        }
+
+    @application.get("/api/auth/oidc/start")
+    async def oidc_start():
+        if not authenticator.login_enabled:
+            raise HTTPException(status_code=404, detail="未启用 OIDC 登录")
+        try:
+            authorization = authenticator.begin_authorization()
+        except AuthenticationError as exc:
+            log_event(LOGGER, logging.WARNING, "oidc_start_failed", reason=exc.code)
+            raise HTTPException(status_code=503, detail="身份平台暂时不可用") from None
+        response = RedirectResponse(authorization.authorization_url, status_code=302)
+        # SameSite=Lax rather than Strict: the callback arrives through a cross-site redirect from
+        # the identity provider, and a Strict cookie would not be attached to it. The path scope
+        # keeps the transient verifier off every other request.
+        response.set_cookie(
+            OIDC_FLOW_COOKIE, authenticator.issue_flow_token(authorization), httponly=True,
+            samesite="lax", secure=config.environment == "production",
+            max_age=OIDC_FLOW_SECONDS, path="/api/auth/oidc",
+        )
+        return response
+
+    @application.get("/api/auth/oidc/callback")
+    async def oidc_callback(request: Request):
+        if not authenticator.login_enabled:
+            raise HTTPException(status_code=404, detail="未启用 OIDC 登录")
+        provider_error = request.query_params.get("error", "")
+        if provider_error:
+            log_event(LOGGER, logging.WARNING, "oidc_login_rejected", reason=provider_error[:64])
+            raise HTTPException(status_code=401, detail="企业登录未通过") from None
+        try:
+            flow = authenticator.read_flow_token(request.cookies.get(OIDC_FLOW_COOKIE, ""))
+            session, principal = authenticator.complete_authorization(
+                code=request.query_params.get("code", ""),
+                state=request.query_params.get("state", ""), flow=flow,
+            )
+        except AuthenticationError as exc:
+            log_event(LOGGER, logging.WARNING, "oidc_login_failed", reason=exc.code)
+            raise HTTPException(status_code=401, detail="登录校验失败，请重新登录") from None
+        log_event(LOGGER, logging.INFO, "oidc_login_succeeded",
+                  actor_subject_id=principal.subject_id)
+        response = RedirectResponse("/", status_code=302)
+        response.set_cookie(
+            SESSION_COOKIE, session, httponly=True, samesite="strict",
+            secure=config.environment == "production",
+            max_age=config.oidc_session_hours * 3600,
+        )
+        response.delete_cookie(OIDC_FLOW_COOKIE, path="/api/auth/oidc")
+        return response
 
     @application.post("/api/auth/login")
     async def auth_login(payload: dict):
@@ -185,7 +252,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         except AuthenticationError:
             raise HTTPException(status_code=401, detail="用户名或密码错误") from None
         response = JSONResponse({"ok": True})
-        response.set_cookie("docmind_session", token, httponly=True, samesite="strict",
+        response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="strict",
                             secure=config.environment == "production", max_age=config.local_session_hours * 3600)
         return response
 
@@ -195,7 +262,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
             raise HTTPException(status_code=403, detail="游客登录未启用")
         response = JSONResponse({"ok": True, "redirect": "/"})
         response.set_cookie(
-            "docmind_session", authenticator.guest_login(), httponly=True,
+            SESSION_COOKIE, authenticator.guest_login(), httponly=True,
             samesite="strict", secure=config.environment == "production",
             max_age=config.guest_session_hours * 3600,
         )
@@ -203,8 +270,8 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
 
     @application.post("/api/auth/logout")
     async def auth_logout():
-        response = JSONResponse({"ok": True})
-        response.delete_cookie("docmind_session")
+        response = JSONResponse({"ok": True, "redirect": authenticator.logout_url()})
+        response.delete_cookie(SESSION_COOKIE)
         return response
 
     @application.get("/health/live")

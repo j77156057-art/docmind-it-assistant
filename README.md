@@ -113,6 +113,9 @@ IT_EMBEDDING_MODE=provider
 IT_OIDC_ISSUER=https://id.example.com/
 IT_OIDC_AUDIENCE=docmind
 IT_OIDC_JWKS_URL=https://id.example.com/.well-known/jwks.json
+IT_OIDC_CLIENT_ID=docmind-portal
+IT_OIDC_REDIRECT_URI=https://docmind.example.com/api/auth/oidc/callback
+IT_OIDC_SCOPES=openid profile email
 IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
 ```
 
@@ -370,7 +373,7 @@ node --check web/admin.js
 - LangGraph 的 PostgreSQL checkpoint 路径由 `tests/test_indexing_graph_postgres.py` 覆盖：CI 拉起 `pgvector/pgvector` 服务（与 `compose.yaml` 同镜像家族，迁移 0003 需要 `vector` 扩展），断言独立 schema 建表、续跑不重复计费、以及 checkpoint 不进入应用 schema（`alembic` 看不到）。本机没有 PostgreSQL 时该模块自动跳过；SQLite 路径由 `tests/test_indexing_graph.py` 覆盖。
 - 发布前评测在发布请求内**同步整跑**黄金题：题集很大时发布会变慢，`evaluate` 任务类型虽已声明但尚未实现异步评测。
 - 办公产物保存在本地目录，尚未接入对象存储、保留策略和审批发布。
-- Web 前端尚未实现 OIDC Authorization Code + PKCE 登录，当前生产入口面向 Bearer Token 客户端或身份网关。
+- Web 前端已实现 OIDC Authorization Code + PKCE 浏览器登录：`/api/auth/oidc/start` 发起授权、`/api/auth/oidc/callback` 换码并发放会话 Cookie；端点默认走 `<issuer>/.well-known/openid-configuration` 自动发现，可用 `IT_OIDC_*_ENDPOINT` 覆盖。真实身份提供商的联调仍需部署方配置（本仓库仅用 stub IdP 覆盖单测分支，端到端联调见 `tests/test_oidc_login.py` 注释）。
 - 尚无检索重排（后续批次）。
 - 尚未在本仓库中提供 Kubernetes、云网络策略、备份恢复和可观测性部署清单。
 - 外部模型与真实身份提供商需要部署方自行配置和联调。

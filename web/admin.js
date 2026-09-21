@@ -1317,12 +1317,12 @@
 
   async function setupAuthentication() {
     const config = await api('/api/auth/config');
-    $('logoutButton').hidden = config.mode !== 'local';
+    $('logoutButton').hidden = !['local', 'oidc'].includes(config.mode);
   }
 
   async function logout() {
-    await api('/api/auth/logout', { method: 'POST' });
-    location.href = '/login';
+    const payload = await api('/api/auth/logout', { method: 'POST' });
+    location.href = payload.redirect || '/login';
   }
 
   function bind() {

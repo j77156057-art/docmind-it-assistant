@@ -61,6 +61,8 @@ class DatabaseMigrationTests(unittest.TestCase):
             oidc_issuer="https://identity.example.com",
             oidc_audience="docmind",
             oidc_jwks_url="https://identity.example.com/.well-known/jwks.json",
+            oidc_client_id="docmind-portal",
+            oidc_redirect_uri="https://docmind.example.com/api/auth/oidc/callback",
             auth_subject_salt="a-production-subject-salt-at-least-32-characters",
         )
         self.assertNotIn("secret", repr(settings))

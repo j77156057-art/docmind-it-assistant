@@ -5,6 +5,7 @@ import os
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -55,6 +56,20 @@ def _is_loopback_host(value: str) -> bool:
         return ip_address(normalized).is_loopback
     except ValueError:
         return False
+
+
+def _is_loopback_url(value: str) -> bool:
+    """True only for `http://` URLs pointing back at this machine.
+
+    The redirect URI is where the identity provider sends the browser back to, so production must
+    use HTTPS. Plain HTTP is tolerated for loopback addresses only, which keeps a developer able to
+    exercise the login flow without provisioning a certificate.
+    """
+    try:
+        parts = urlsplit(value.strip())
+    except ValueError:
+        return False
+    return parts.scheme == "http" and bool(parts.hostname) and _is_loopback_host(parts.hostname)
 
 
 class AppSettings(BaseModel):
@@ -141,6 +156,19 @@ class AppSettings(BaseModel):
     oidc_role_claim: str = "roles"
     oidc_group_claim: str = "groups"
     oidc_leeway_seconds: int = Field(default=30, ge=0, le=300)
+    oidc_client_id: str = ""
+    oidc_client_secret: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
+    oidc_redirect_uri: str = ""
+    oidc_scopes: str = "openid profile email"
+    oidc_session_hours: int = Field(default=12, ge=1, le=168)
+    oidc_timeout_seconds: float = Field(default=10.0, ge=1.0, le=120.0)
+    # Optional endpoint overrides. When left empty the endpoints are read from the issuer's
+    # `/.well-known/openid-configuration`, which is what makes swapping identity providers a
+    # configuration-only change. They exist for on-premise providers that do not publish a
+    # discovery document.
+    oidc_authorization_endpoint: str = ""
+    oidc_token_endpoint: str = ""
+    oidc_end_session_url: str = ""
     auth_subject_salt: SecretStr = Field(
         default=SecretStr("development-only"), exclude=True, repr=False,
     )
@@ -205,10 +233,23 @@ class AppSettings(BaseModel):
                 raise ValueError("OIDC 签发方必须使用 HTTPS")
             if not self.oidc_audience:
                 raise ValueError("IT_OIDC_AUDIENCE 不能为空")
-            if not self.oidc_jwks_url.startswith("https://"):
+            # Optional: when it is absent the discovery document supplies the JWKS URL, which is
+            # what lets an operator point the service at a new provider by changing the issuer
+            # alone. It is only validated when it is actually set.
+            if self.oidc_jwks_url and not self.oidc_jwks_url.startswith("https://"):
                 raise ValueError("OIDC JWKS 地址必须使用 HTTPS")
             if not self.auth_subject_salt.get_secret_value():
                 raise ValueError("IT_AUTH_SUBJECT_SALT 不能为空")
+            if not self.oidc_client_id:
+                raise ValueError("IT_OIDC_CLIENT_ID 不能为空")
+            if not self.oidc_redirect_uri:
+                raise ValueError("IT_OIDC_REDIRECT_URI 不能为空")
+            if not self.oidc_redirect_uri.startswith("https://") and not (
+                self.environment != "production" and _is_loopback_url(self.oidc_redirect_uri)
+            ):
+                raise ValueError("OIDC 回调地址必须使用 HTTPS")
+            if "openid" not in self.oidc_scope_list:
+                raise ValueError("IT_OIDC_SCOPES 必须包含 openid")
         if self.environment == "production" and len(self.auth_subject_salt.get_secret_value()) < 32:
             raise ValueError("生产环境 IT_AUTH_SUBJECT_SALT 至少需要 32 个字符")
         return self
@@ -317,6 +358,15 @@ class AppSettings(BaseModel):
             oidc_role_claim=read("IT_OIDC_ROLE_CLAIM", "roles").strip(),
             oidc_group_claim=read("IT_OIDC_GROUP_CLAIM", "groups").strip(),
             oidc_leeway_seconds=int(read("IT_OIDC_LEEWAY_SECONDS", "30")),
+            oidc_client_id=read("IT_OIDC_CLIENT_ID", "").strip(),
+            oidc_client_secret=SecretStr(read("IT_OIDC_CLIENT_SECRET", "").strip()),
+            oidc_redirect_uri=read("IT_OIDC_REDIRECT_URI", "").strip(),
+            oidc_scopes=read("IT_OIDC_SCOPES", "openid profile email").strip(),
+            oidc_session_hours=int(read("IT_OIDC_SESSION_HOURS", "12")),
+            oidc_timeout_seconds=float(read("IT_OIDC_TIMEOUT_SECONDS", "10")),
+            oidc_authorization_endpoint=read("IT_OIDC_AUTHORIZATION_ENDPOINT", "").strip(),
+            oidc_token_endpoint=read("IT_OIDC_TOKEN_ENDPOINT", "").strip(),
+            oidc_end_session_url=read("IT_OIDC_END_SESSION_URL", "").strip(),
             auth_subject_salt=SecretStr(read("IT_AUTH_SUBJECT_SALT", "development-only")),
             log_level=read("IT_LOG_LEVEL", "INFO").strip().upper(),
             log_json=_bool(read("IT_LOG_JSON", "true")),
@@ -329,6 +379,13 @@ class AppSettings(BaseModel):
         """Local-login roles in stable order; unknown values are ignored by the authenticator."""
         return tuple(
             part.strip().lower() for part in self.local_roles.split(",") if part.strip()
+        )
+
+    @property
+    def oidc_scope_list(self) -> tuple[str, ...]:
+        """Requested scopes in stable order. `openid` is what makes the response an OIDC one."""
+        return tuple(
+            part.strip() for part in self.oidc_scopes.replace(",", " ").split() if part.strip()
         )
 
     def credential_is_configured(self, name: str) -> bool:

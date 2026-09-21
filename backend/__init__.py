@@ -1,7 +1,7 @@
 from .config import AppSettings
 from .auth import (
-    CLASSIFICATIONS, CLASSIFICATION_RANK, GOVERNANCE_ROLES, KNOWN_ROLES, ROLE_CAPABILITIES,
-    ROLE_LEVELS,
+    CLASSIFICATIONS, CLASSIFICATION_RANK, GOVERNANCE_ROLES, KNOWN_ROLES, OIDC_FLOW_COOKIE,
+    OIDC_FLOW_SECONDS, ROLE_CAPABILITIES, ROLE_LEVELS, SESSION_COOKIE,
     AuthenticationError, OIDCAuthenticator, Principal, allows_classification,
     is_open_classification, normalize_classification, subject_identifier,
 )
@@ -20,6 +20,7 @@ from .providers import PROVIDERS, ProviderSpec, get_provider, model_context_wind
 __all__ = [
     "AppSettings", "AuthenticationError", "OIDCAuthenticator", "Principal",
     "GOVERNANCE_ROLES", "KNOWN_ROLES", "ROLE_CAPABILITIES", "ROLE_LEVELS",
+    "OIDC_FLOW_COOKIE", "OIDC_FLOW_SECONDS", "SESSION_COOKIE",
     "GovernanceError",
     "CLASSIFICATIONS", "CLASSIFICATION_RANK", "allows_classification",
     "is_open_classification",

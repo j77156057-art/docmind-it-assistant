@@ -1,12 +1,21 @@
 const form = document.querySelector('#form');
 const error = document.querySelector('#error');
+const ssoButton = document.querySelector('#ssoLogin');
+const ssoDivider = document.querySelector('#ssoDivider');
 const guestButton = document.querySelector('#guestLogin');
 const guestDivider = document.querySelector('#guestDivider');
 
 fetch('/api/auth/config').then(response => response.json()).then(config => {
+  const sso = Boolean(config.sso_login);
+  form.hidden = sso;
+  ssoButton.hidden = !sso;
+  ssoDivider.hidden = !sso;
   guestButton.hidden = !config.guest_enabled;
   guestDivider.hidden = !config.guest_enabled;
+}).catch(() => {
+  error.textContent = '无法读取登录配置，请刷新重试';
 });
+
 form.addEventListener('submit', async event => {
   event.preventDefault();
   error.textContent = '';

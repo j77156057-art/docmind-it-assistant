@@ -32,7 +32,7 @@ LangGraph 引入 32 个传递依赖（含 `langchain-core`、`langsmith`、`http
 | 2 | ~~`/health/live`、`/health/ready`、请求 ID 与结构化日志~~ | 已完成 | 无 |
 | 3 | ~~PostgreSQL Repository 与 Alembic~~ | 已完成 | 无 |
 | 4 | 引用与审计数据模型（模型用量已完成） | P0 | 3 |
-| 5 | ~~OIDC 身份、最小 RBAC 和检索前 ACL~~ | 已完成 | 3 |
+| 5 | ~~OIDC 身份（Bearer 校验与浏览器 Authorization Code + PKCE 登录）、最小 RBAC 和检索前 ACL~~ | 已完成 | 3 |
 | 6 | ~~独立管理服务与控制台~~、~~知识治理状态机与审批发布（批次 1）~~、~~异步索引 Worker 与任务可见性（批次 2）~~、~~LangGraph 断点续跑与隔离闭包守卫（批次 3）~~；待完成评测门（批次 4） | P1 | 3、5 |
 | 7 | ~~pgvector + 全文混合检索~~ | 已完成 | 6 |
 | 8 | 流式回答、预算、熔断与自动降级（模型 Client 已完成） | P1 | 1、4 |

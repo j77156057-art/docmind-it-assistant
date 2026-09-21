@@ -1,6 +1,6 @@
 # Project Status
 
-更新日期：2026-09-20
+更新日期：2026-09-22
 
 ## 已完成
 
@@ -10,6 +10,7 @@
 - OIDC Bearer Token 校验、`viewer/auditor/admin` RBAC 和匿名化主体隔离。
 - 用户、组、角色级文档 ACL，并在召回前执行过滤。
 - 文档密级（`public/internal/confidential`）参与授权：与 ACL 构成"与"条件，只收紧不放大；机密需 `document.read.confidential`（等级 ≥ auditor），未知密级失败关闭，导入只能提升密级不能降低。
+- OIDC 浏览器登录（Authorization Code + PKCE）：`/api/auth/oidc/start` 发起授权并下发 S256 `code_challenge` + `state`/`nonce` 流程 Cookie（SameSite=Lax），`/api/auth/oidc/callback` 换码、校验 `state`/`nonce` 与 `alg`（拒绝 HS256 算法混淆）后发放会话 Cookie（SameSite=Strict）；端点默认走 issuer 的 `.well-known/openid-configuration` 自动发现，可用 `IT_OIDC_*_ENDPOINT` 覆盖；Bearer Token 通路保留给 API 客户端。
 - 管理后台文档导入、ACL 编辑、审计、健康状态和运行时模型切换。
 - DOCX、PDF、PPTX、XLSX 结构化生成、回读验证和受控下载。
 - 模型重试、Token/费用账本、动态模型路由和密钥脱敏。
@@ -56,13 +57,12 @@ node --check web/admin.js
 先设置 `IT_DATABASE_URL=sqlite:///data/queries.db`，或直接用 `.\scripts\dev.ps1 start`
 （它会覆盖为项目内 SQLite 并自动执行迁移，同时启动查询、管理与 Worker 三个进程）。
 
-当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验。
+当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验；`tests/test_oidc_login.py` 用 stub IdP（真实 RSA 密钥 + `httpx.MockTransport`）覆盖 PKCE(S256) 挑战、state/nonce 绑定、HS256 算法混淆拒绝、错误签名与端点发现缓存。
 
 ## 后续工作
 
 1. 补充 `reindex` / `withdraw` / `evaluate` 任务类型（含异步评测），并为可重试失败增加持久化退避（`next_attempt_at`）。
-2. 增加浏览器 OIDC Authorization Code + PKCE 登录。
-3. 接入对象存储、保留策略、审计导出和引用持久化。
-4. 增加检索质量数据集运营（黄金题评审流程）、性能压测和生产可观测性。
-5. 引入检索重排与知识域模型（域 B），支持按范围隔离审核与评测。
-6. 提供 Kubernetes、网络策略、备份恢复和灰度发布参考部署。
+2. 接入对象存储、保留策略、审计导出和引用持久化。
+3. 增加检索质量数据集运营（黄金题评审流程）、性能压测和生产可观测性。
+4. 引入检索重排与知识域模型（域 B），支持按范围隔离审核与评测。
+5. 提供 Kubernetes、网络策略、备份恢复和灰度发布参考部署。
