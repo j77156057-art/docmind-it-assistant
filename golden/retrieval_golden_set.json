@@ -1,0 +1,74 @@
+{
+  "description": "DocMind 检索式黄金题库（重建版）。两套语料各约 21 题，共 42 题，锚定真实章节。每题 expected_document_key 对应导入时的 source_key；expected_heading 为真实章节标题子串（门禁用 `in` 匹配）。",
+  "repos": [
+    {
+      "name": "rag-agent",
+      "documents": [
+        {"source_key": "ra-readme", "title": "DocMind 工程 Agent 运行时 README", "path": "D:/WorkBuddy/rag-agent/README.md"},
+        {"source_key": "ra-demo", "title": "DocMind 演示说明", "path": "D:/WorkBuddy/rag-agent/DEMO.md"},
+        {"source_key": "ra-capability", "title": "DocMind 能力边界对照表", "path": "D:/WorkBuddy/rag-agent/docs/capability-boundary.md"},
+        {"source_key": "ra-integrations", "title": "DocMind 集成文档 MCP 与 Web 试玩", "path": "D:/WorkBuddy/rag-agent/docs/integrations.md"},
+        {"source_key": "ra-product", "title": "DocMind 智能文档助手产品说明", "path": "D:/WorkBuddy/rag-agent/sample_docs/docmind_product.md"},
+        {"source_key": "ra-roadmap", "title": "Agent 双项目拆分记录", "path": "D:/WorkBuddy/rag-agent/docs/agent-applications-roadmap.md"}
+      ],
+      "cases": [
+        {"case_key": "ra-01", "question": "DocMind 这个项目主体到底是什么？", "expected_document_key": "ra-readme", "expected_heading": "Agent 运行时", "tags": "rag-agent/定位"},
+        {"case_key": "ra-02", "question": "DocMind 上层落地的工作台面向什么使用场景？", "expected_document_key": "ra-readme", "expected_heading": "落地场景", "tags": "rag-agent/工作台"},
+        {"case_key": "ra-03", "question": "DocMind 的后端和前端分别用了什么技术栈？", "expected_document_key": "ra-readme", "expected_heading": "技术栈", "tags": "rag-agent/技术栈"},
+        {"case_key": "ra-04", "question": "DocMind 桌面端用的是哪种原生窗口技术？", "expected_document_key": "ra-readme", "expected_heading": "桌面端", "tags": "rag-agent/桌面端"},
+        {"case_key": "ra-05", "question": "DocMind 的 Harness 提供了哪些可观测能力？", "expected_document_key": "ra-readme", "expected_heading": "Harness 能力", "tags": "rag-agent/harness"},
+        {"case_key": "ra-06", "question": "DocMind 零配置启动默认使用什么模型和嵌入模式？", "expected_document_key": "ra-demo", "expected_heading": "方式 A", "tags": "rag-agent/运行方式"},
+        {"case_key": "ra-07", "question": "DocMind 问答页通过哪个接口提问，字段名是什么？", "expected_document_key": "ra-demo", "expected_heading": "命令行", "tags": "rag-agent/api"},
+        {"case_key": "ra-08", "question": "DocMind 的 ReAct 推理流程核心是什么？", "expected_document_key": "ra-demo", "expected_heading": "ReAct 推理流程", "tags": "rag-agent/react"},
+        {"case_key": "ra-09", "question": "DocMind 工作台（/workbench）顶栏有哪些入口？", "expected_document_key": "ra-demo", "expected_heading": "工作台", "tags": "rag-agent/工作台"},
+        {"case_key": "ra-10", "question": "DocMind 立项时的定位是什么，明确不做什么？", "expected_document_key": "ra-capability", "expected_heading": "为什么要有边界", "tags": "rag-agent/边界"},
+        {"case_key": "ra-11", "question": "DocMind 的能力边界分哪三档立场？", "expected_document_key": "ra-capability", "expected_heading": "能力边界对照表", "tags": "rag-agent/边界"},
+        {"case_key": "ra-12", "question": "DocMind 明确不碰的红线清单包括哪些？", "expected_document_key": "ra-capability", "expected_heading": "明确不碰", "tags": "rag-agent/红线"},
+        {"case_key": "ra-13", "question": "一句话概括 DocMind 的产品定位。", "expected_document_key": "ra-capability", "expected_heading": "一句话定位", "tags": "rag-agent/定位"},
+        {"case_key": "ra-14", "question": "DocMind 的 MCP 引擎桥通过什么协议对接外部游戏引擎？", "expected_document_key": "ra-integrations", "expected_heading": "MCP 引擎桥", "tags": "rag-agent/mcp"},
+        {"case_key": "ra-15", "question": "DocMind 的 MCP 服务器注册表文件叫什么名字？", "expected_document_key": "ra-integrations", "expected_heading": "配置模型", "tags": "rag-agent/mcp"},
+        {"case_key": "ra-16", "question": "Godot Web 试玩导出产物固定放在哪个目录？", "expected_document_key": "ra-integrations", "expected_heading": "Godot Web 试玩导出", "tags": "rag-agent/web试玩"},
+        {"case_key": "ra-17", "question": "DocMind 智能文档助手支持哪些文件格式？", "expected_document_key": "ra-product", "expected_heading": "常见问题", "tags": "rag-agent/产品"},
+        {"case_key": "ra-18", "question": "免费版每个工作区最多能上传多少个文档？", "expected_document_key": "ra-product", "expected_heading": "计费与配额", "tags": "rag-agent/产品"},
+        {"case_key": "ra-19", "question": "Agent 双项目拆分后，rag-agent 仓库只保留什么？", "expected_document_key": "ra-roadmap", "expected_heading": "当前阶段", "tags": "rag-agent/拆分"},
+        {"case_key": "ra-20", "question": "DocMind 场景画布把 .tscn 画成什么结构？", "expected_document_key": "ra-readme", "expected_heading": "场景画布", "tags": "rag-agent/场景画布"},
+        {"case_key": "ra-21", "question": "DocMind 全量单元测试应该怎么跑？", "expected_document_key": "ra-demo", "expected_heading": "自检脚本", "tags": "rag-agent/测试"}
+      ]
+    },
+    {
+      "name": "docmind-it-assistant",
+      "documents": [
+        {"source_key": "dm-readme", "title": "DocMind IT Assistant README", "path": "D:/WorkBuddy/docmind-it-assistant/README.md"},
+        {"source_key": "dm-status", "title": "Project Status", "path": "D:/WorkBuddy/docmind-it-assistant/PROJECT_STATUS.md"},
+        {"source_key": "dm-knowledge", "title": "演示企业 IT 知识库", "path": "D:/WorkBuddy/docmind-it-assistant/knowledge.md"},
+        {"source_key": "dm-ingestion", "title": "文档导入与混合检索运维说明", "path": "D:/WorkBuddy/docmind-it-assistant/docs/document-ingestion.md"},
+        {"source_key": "dm-p2acl", "title": "P2 ACL 切换架构设计", "path": "D:/WorkBuddy/docmind-it-assistant/docs/architecture-p2-acl-switch.md"},
+        {"source_key": "dm-isolation", "title": "与开发 Agent 的隔离边界", "path": "D:/WorkBuddy/docmind-it-assistant/docs/isolation-boundary.md"},
+        {"source_key": "dm-govmodel", "title": "知识供给治理数据模型", "path": "D:/WorkBuddy/docmind-it-assistant/docs/knowledge-governance-data-model.md"}
+      ],
+      "cases": [
+        {"case_key": "dm-01", "question": "DocMind IT Assistant 的核心能力有哪些？", "expected_document_key": "dm-readme", "expected_heading": "核心能力", "tags": "dm/能力"},
+        {"case_key": "dm-02", "question": "DocMind 的查询服务和管理服务分别监听哪个端口？", "expected_document_key": "dm-readme", "expected_heading": "架构", "tags": "dm/架构"},
+        {"case_key": "dm-03", "question": "DocMind 文档密级有几档，默认是什么？", "expected_document_key": "dm-readme", "expected_heading": "文档密级", "tags": "dm/密级"},
+        {"case_key": "dm-04", "question": "DocMind 知识治理把角色分成哪两层？", "expected_document_key": "dm-readme", "expected_heading": "知识治理", "tags": "dm/治理"},
+        {"case_key": "dm-05", "question": "DocMind 评测门最低 recall 和引用命中率阈值各是多少？", "expected_document_key": "dm-readme", "expected_heading": "评测门与黄金题", "tags": "dm/评测"},
+        {"case_key": "dm-06", "question": "DocMind 的回答策略有哪几种可选？", "expected_document_key": "dm-readme", "expected_heading": "模型与密钥", "tags": "dm/策略"},
+        {"case_key": "dm-07", "question": "DocMind IT Assistant 已完成哪些能力？", "expected_document_key": "dm-status", "expected_heading": "已完成", "tags": "dm/状态"},
+        {"case_key": "dm-08", "question": "DocMind 的安全边界规定查询服务不能注册哪些接口？", "expected_document_key": "dm-status", "expected_heading": "安全边界", "tags": "dm/安全"},
+        {"case_key": "dm-09", "question": "DocMind 后续工作已收口了哪些能力？", "expected_document_key": "dm-status", "expected_heading": "后续工作", "tags": "dm/状态"},
+        {"case_key": "dm-10", "question": "VPN 连接失败时第一步应该做什么？", "expected_document_key": "dm-knowledge", "expected_heading": "VPN 连接失败", "tags": "dm/kb"},
+        {"case_key": "dm-11", "question": "账号被锁定时如何自助解锁？", "expected_document_key": "dm-knowledge", "expected_heading": "账号锁定与密码", "tags": "dm/kb"},
+        {"case_key": "dm-12", "question": "安装软件优先走什么渠道？", "expected_document_key": "dm-knowledge", "expected_heading": "软件安装", "tags": "dm/kb"},
+        {"case_key": "dm-13", "question": "DocMind 支持哪些文档格式，各自如何提取章节？", "expected_document_key": "dm-ingestion", "expected_heading": "支持格式与限制", "tags": "dm/导入"},
+        {"case_key": "dm-14", "question": "DocMind 知识治理 direct 模式与 review 模式有什么区别？", "expected_document_key": "dm-ingestion", "expected_heading": "知识治理（审批发布）", "tags": "dm/治理"},
+        {"case_key": "dm-15", "question": "DocMind 本地开发默认的 Embedding 模式是什么，能否用于生产？", "expected_document_key": "dm-ingestion", "expected_heading": "Embedding 配置", "tags": "dm/embedding"},
+        {"case_key": "dm-16", "question": "P2 ACL 切换的核心范围包括哪些内容？", "expected_document_key": "dm-p2acl", "expected_heading": "用户已锁定的 4 项决策", "tags": "dm/acl"},
+        {"case_key": "dm-17", "question": "document_acl 的 principal_id 为什么不做跨类型外键？", "expected_document_key": "dm-p2acl", "expected_heading": "为何不做法拉第三列外键", "tags": "dm/acl"},
+        {"case_key": "dm-18", "question": "P2 ACL 迁移 0015 的 down_revision 和 revision 分别是什么？", "expected_document_key": "dm-p2acl", "expected_heading": "迁移设计", "tags": "dm/acl"},
+        {"case_key": "dm-19", "question": "开发 Agent 与 IT 查询助手在仓库上如何隔离？", "expected_document_key": "dm-isolation", "expected_heading": "目录与仓库", "tags": "dm/隔离"},
+        {"case_key": "dm-20", "question": "哪些能力被禁止进入 DocMind 查询服务？", "expected_document_key": "dm-isolation", "expected_heading": "禁止进入查询服务的能力", "tags": "dm/隔离"},
+        {"case_key": "dm-21", "question": "DocMind 运行隔离要求查询和管理服务使用什么？", "expected_document_key": "dm-isolation", "expected_heading": "运行隔离", "tags": "dm/隔离"}
+      ]
+    }
+  ]
+}
