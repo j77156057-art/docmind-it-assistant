@@ -40,6 +40,7 @@
         <button class="nav-item" data-view="governance" id="governanceNav" hidden><svg><use href="#i-shield"/></svg><span>知识治理</span></button>
         <button class="nav-item" data-view="jobs" id="jobsNav" hidden><svg><use href="#i-activity"/></svg><span>导入任务</span></button>
         <button class="nav-item" data-view="evaluation" id="evaluationNav" hidden><svg><use href="#i-audit"/></svg><span>评测门</span></button>
+        <button class="nav-item" data-view="org" id="orgNav" hidden><svg><use href="#i-globe"/></svg><span>组织管理</span></button>
         <button class="nav-item" data-view="artifacts"><svg><use href="#i-sparkles"/></svg><span>文档生成</span></button>
         <button class="nav-item" data-view="audit"><svg><use href="#i-audit"/></svg><span>审计记录</span></button>
         <button class="nav-item" data-view="system"><svg><use href="#i-activity"/></svg><span>系统状态</span></button>
@@ -273,6 +274,35 @@
           </section>
         </div>
       </section>
+
+      <section class="view" id="view-org">
+        <div class="section-bar">
+          <div><strong>部门</strong><span id="departmentCount">0 个</span></div>
+          <button class="primary-button acl-write-only" id="openCreateDepartment"><svg><use href="#i-plus"/></svg><span>新增部门</span></button>
+        </div>
+        <p class="reason-hint">部门通过 <code>department</code> 授权主体类型决定文档可见范围；成员关系由登录时从身份提供方同步，也可在此手动维护。</p>
+        <div class="content-grid">
+          <div class="table-region">
+            <table class="data-table">
+              <thead><tr><th>部门键</th><th>名称</th><th>成员数</th><th><span class="sr-only">操作</span></th></tr></thead>
+              <tbody id="departmentRows"></tbody>
+            </table>
+            <div class="empty-state" id="departmentEmpty" hidden><svg><use href="#i-globe"/></svg><strong>暂无部门</strong></div>
+          </div>
+          <aside class="inspector" id="orgInspector" aria-label="部门成员" hidden>
+            <div class="inspector-head">
+              <div><span class="eyebrow">部门成员</span><h2 id="orgInspectorTitle">-</h2></div>
+              <button class="icon-button" id="closeOrgInspector" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button>
+            </div>
+            <div class="source-actions">
+              <button class="secondary-button acl-write-only" id="openAddMember"><svg><use href="#i-plus"/></svg>添加成员</button>
+            </div>
+            <div class="acl-list" id="memberList"></div>
+            <div class="acl-empty" id="memberEmpty" hidden>该部门暂无成员</div>
+          </aside>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -336,6 +366,28 @@
         <label class="field"><span><input type="checkbox" name="active" checked> 启用该用例</span></label>
       </div>
       <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelCase">取消</button><button type="submit" class="primary-button" id="saveCase">保存用例</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="departmentDialog">
+    <form method="dialog" id="departmentForm">
+      <div class="dialog-head"><div><span class="eyebrow">组织</span><h2>新增部门</h2></div><button type="button" class="icon-button" id="closeDepartment" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+      <div class="preview-body">
+        <label class="field"><span>部门键</span><input name="department_key" maxlength="64" required placeholder="engineering"></label>
+        <label class="field"><span>名称</span><input name="name" maxlength="256" placeholder="工程部"></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelDepartment">取消</button><button type="submit" class="primary-button" id="submitDepartment"><svg><use href="#i-plus"/></svg><span>创建</span></button></div>
+    </form>
+  </dialog>
+
+  <dialog id="memberDialog">
+    <form method="dialog" id="memberForm">
+      <div class="dialog-head"><div><span class="eyebrow">组织</span><h2>添加成员</h2></div><button type="button" class="icon-button" id="closeMember" aria-label="关闭" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+      <div class="preview-body">
+        <p class="reason-hint">将用户加入部门 <strong id="memberDialogDept">-</strong></p>
+        <label class="field"><span>选择用户</span><select name="subject_id" id="memberUserSelect" required></select></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelMember">取消</button><button type="submit" class="primary-button" id="submitMember"><svg><use href="#i-plus"/></svg><span>添加</span></button></div>
     </form>
   </dialog>
 

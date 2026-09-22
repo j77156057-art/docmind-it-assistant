@@ -2,7 +2,7 @@
   'use strict';
 
   const $ = id => document.getElementById(id);
-  const state = { me: null, documents: [], selected: null, acl: null, artifacts: [], audit: [], modelConfig: null, pendingReviews: [], preview: null, jobs: [], queue: null, cases: [], runs: [], evaluationMeta: null, view: 'documents' };
+  const state = { me: null, documents: [], selected: null, acl: null, artifacts: [], audit: [], modelConfig: null, pendingReviews: [], preview: null, jobs: [], queue: null, cases: [], runs: [], evaluationMeta: null, orgDepartments: [], orgUsers: [], selectedDepartment: null, view: 'documents' };
   const viewMeta = {
     documents: ['文档库', '版本、发布状态与访问权限'],
     governance: ['知识治理', '审批、发布、作废与回滚'],
@@ -11,10 +11,11 @@
     artifacts: ['文档生成', '创建并下载办公文档'],
     audit: ['审计记录', '管理操作与请求追踪'],
     system: ['系统状态', '服务依赖与身份上下文'],
+    org: ['组织管理', '部门与成员维护'],
   };
   const statusText = { indexed: '已发布', queued: '待处理', processing: '处理中', staged: '待审核', rejected: '已驳回', withdrawn: '已作废', failed: '失败', superseded: '已替代', running: '运行中', succeeded: '已完成', cancelled: '已取消', pass: '通过', warn: '警告', block: '阻断', overridden: '已越权放行' };
   const actionText = { document_acl_replace: '更新权限', document_import: '导入文档', document_source_view: '查看原文件', document_source_download: '下载原文件', artifact_create: '生成文件', model_config_update: '切换模型', document_review_approve: '审核通过', document_review_reject: '审核驳回', document_publish: '发布版本', document_withdraw: '作废版本', document_rollback: '回滚版本', document_version_preview: '预览版本', ingestion_job_retry: '重试任务', ingestion_job_cancel: '取消任务', document_index_completed: '索引完成', document_index_failed: '索引失败', evaluation_case_save: '保存评测用例', evaluation_case_delete: '删除评测用例', evaluation_run: '运行评测' };
-  const typeText = { user: '用户', group: '用户组', role: '角色' };
+  const typeText = { user: '用户', group: '用户组', role: '角色', department: '部门' };
   const artifactExtensions = { docx: 'docx', pdf: 'pdf', pptx: 'pptx', xlsx: 'xlsx' };
   const artifactPlaceholders = {
     docx: '输入正文，空行分隔段落',
@@ -304,7 +305,7 @@
     row.className = 'acl-row';
     const type = document.createElement('select');
     type.setAttribute('aria-label', '主体类型');
-    for (const value of ['user', 'group', 'role']) {
+    for (const value of ['user', 'group', 'role', 'department']) {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = typeText[value];
@@ -314,7 +315,7 @@
     const id = document.createElement('input');
     id.maxLength = 256;
     id.value = entry.principal_id;
-    id.placeholder = entry.principal_type === 'user' ? '匿名主体 ID' : '名称';
+    id.placeholder = entry.principal_type === 'user' ? '匿名主体 ID' : entry.principal_type === 'department' ? '部门键' : '名称';
     id.setAttribute('aria-label', '主体标识');
     type.addEventListener('change', () => { id.placeholder = type.value === 'user' ? '匿名主体 ID' : '名称'; });
     const remove = document.createElement('button');
@@ -925,6 +926,7 @@
     $('governanceNav').hidden = !governanceVisible;
     $('jobsNav').hidden = !can('document.read');
     $('evaluationNav').hidden = !can('document.read');
+    $('orgNav').hidden = !can('audit.read');
     $('runEvaluation').hidden = !can('evaluation.run');
     $('openCase').hidden = !can('evaluation.run');
     const modeText = state.me?.governance_mode === 'review' ? '审批发布' : '直接发布';
@@ -1242,6 +1244,7 @@
     if (view === 'jobs') loadJobs().catch(error => toast(error.message, 'error'));
     if (view === 'evaluation') loadEvaluation().catch(error => toast(error.message, 'error'));
     if (view === 'artifacts') loadArtifacts();
+    if (view === 'org') loadOrg();
     if (view === 'system') Promise.all([loadHealth(), loadModelConfig()]);
   }
 
@@ -1301,6 +1304,7 @@
     button.disabled = true;
     try {
       if (state.view === 'documents') await loadDocuments();
+      if (state.view === 'org') await loadOrg();
       if (state.view === 'governance') await loadGovernance();
       if (state.view === 'jobs') await loadJobs();
       if (state.view === 'evaluation') await loadEvaluation();
@@ -1323,6 +1327,172 @@
   async function logout() {
     const payload = await api('/api/auth/logout', { method: 'POST' });
     location.href = payload.redirect || '/login';
+  }
+
+  // --- 组织管理（部门 / 成员）---------------------------------------------------
+  async function loadOrg() {
+    const [departments, users] = await Promise.all([
+      api('/api/admin/org/departments'),
+      api('/api/admin/org/users'),
+    ]);
+    state.orgDepartments = departments.items || [];
+    state.orgUsers = users.items || [];
+    renderOrg();
+  }
+
+  function memberCount(departmentKey) {
+    return state.orgUsers.filter(u => u.department_key === departmentKey).length;
+  }
+
+  function renderOrg() {
+    const body = $('departmentRows');
+    body.replaceChildren();
+    $('departmentCount').textContent = `${state.orgDepartments.length} 个`;
+    $('departmentEmpty').hidden = state.orgDepartments.length > 0;
+    for (const dept of state.orgDepartments) {
+      const row = document.createElement('tr');
+      row.tabIndex = 0;
+      const keyCell = document.createElement('td');
+      keyCell.textContent = dept.department_key;
+      const nameCell = document.createElement('td');
+      nameCell.textContent = dept.name || dept.department_key;
+      const countCell = document.createElement('td');
+      countCell.textContent = String(memberCount(dept.department_key));
+      const actionCell = document.createElement('td');
+      const memberBtn = document.createElement('button');
+      memberBtn.type = 'button';
+      memberBtn.className = 'text-button';
+      memberBtn.textContent = '查看成员';
+      memberBtn.addEventListener('click', event => { event.stopPropagation(); selectDepartment(dept.department_key); });
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'text-button acl-write-only';
+      delBtn.textContent = '删除';
+      delBtn.addEventListener('click', event => { event.stopPropagation(); deleteDepartment(dept.department_key); });
+      actionCell.append(memberBtn, delBtn);
+      row.append(keyCell, nameCell, countCell, actionCell);
+      row.addEventListener('click', () => selectDepartment(dept.department_key));
+      body.appendChild(row);
+    }
+    if (state.selectedDepartment) renderOrgMembers(state.selectedDepartment);
+    syncOrgCapabilities();
+  }
+
+  function selectDepartment(departmentKey) {
+    state.selectedDepartment = departmentKey;
+    $('orgInspector').hidden = false;
+    $('orgInspectorTitle').textContent = departmentKey;
+    $('memberDialogDept').textContent = departmentKey;
+    renderOrg();
+  }
+
+  function renderOrgMembers(departmentKey) {
+    const body = $('memberList');
+    body.replaceChildren();
+    const members = state.orgUsers.filter(u => u.department_key === departmentKey);
+    $('memberEmpty').hidden = members.length > 0;
+    for (const user of members) {
+      const row = document.createElement('div');
+      row.className = 'acl-row';
+      const name = document.createElement('span');
+      name.textContent = `${user.display_name || user.subject_id}（${user.subject_id}）`;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'icon-button acl-write-only';
+      remove.title = '移除';
+      remove.setAttribute('aria-label', '移除');
+      remove.appendChild(icon('trash'));
+      remove.addEventListener('click', () => removeMember(departmentKey, user.subject_id));
+      row.append(name, remove);
+      body.appendChild(row);
+    }
+  }
+
+  function syncOrgCapabilities() {
+    const write = can('acl.write');
+    document.querySelectorAll('#view-org .acl-write-only').forEach(el => { el.hidden = !write; });
+  }
+
+  function openCreateDepartment() { $('departmentForm').reset(); $('departmentDialog').showModal(); }
+  function openAddMember() {
+    const select = $('memberUserSelect');
+    select.replaceChildren();
+    const members = new Set(state.orgUsers.filter(u => u.department_key === state.selectedDepartment).map(u => u.subject_id));
+    const candidates = state.orgUsers.filter(u => !members.has(u.subject_id));
+    if (!candidates.length) {
+      const opt = document.createElement('option');
+      opt.value = ''; opt.textContent = '没有可添加的用户'; opt.disabled = true;
+      select.appendChild(opt);
+    } else {
+      for (const u of candidates) {
+        const opt = document.createElement('option');
+        opt.value = u.subject_id;
+        opt.textContent = `${u.display_name || u.subject_id}（${u.subject_id}）`;
+        select.appendChild(opt);
+      }
+    }
+    $('memberDialog').showModal();
+  }
+
+  async function submitCreateDepartment(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const key = form.elements.department_key.value.trim();
+    const name = form.elements.name.value.trim();
+    if (!key) { toast('部门键不能为空', 'error'); return; }
+    try {
+      await api('/api/admin/org/departments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ department_key: key, name }),
+      });
+      $('departmentDialog').close();
+      toast('部门已创建');
+      await loadOrg();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function deleteDepartment(departmentKey) {
+    if (!window.confirm(`确认删除部门「${departmentKey}」？该部门成员关系将被移除。`)) return;
+    try {
+      await api(`/api/admin/org/departments/${encodeURIComponent(departmentKey)}`, { method: 'DELETE' });
+      if (state.selectedDepartment === departmentKey) { state.selectedDepartment = null; $('orgInspector').hidden = true; }
+      toast('部门已删除');
+      await loadOrg();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function submitMember(event) {
+    event.preventDefault();
+    const subjectId = $('memberUserSelect').value;
+    if (!subjectId || !state.selectedDepartment) return;
+    try {
+      await api(`/api/admin/org/departments/${encodeURIComponent(state.selectedDepartment)}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject_id: subjectId }),
+      });
+      $('memberDialog').close();
+      toast('成员已添加');
+      await loadOrg();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  async function removeMember(departmentKey, subjectId) {
+    if (!window.confirm('确认将用户从该部门移除？')) return;
+    try {
+      await api(`/api/admin/org/departments/${encodeURIComponent(departmentKey)}/members/${encodeURIComponent(subjectId)}`, { method: 'DELETE' });
+      toast('成员已移除');
+      await loadOrg();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
   }
 
   function bind() {
@@ -1393,6 +1563,15 @@
         $('fileLabel').textContent = event.dataTransfer.files[0].name;
       }
     });
+    $('openCreateDepartment').addEventListener('click', openCreateDepartment);
+    $('closeDepartment').addEventListener('click', () => $('departmentDialog').close());
+    $('cancelDepartment').addEventListener('click', () => $('departmentDialog').close());
+    $('departmentForm').addEventListener('submit', submitCreateDepartment);
+    $('openAddMember').addEventListener('click', openAddMember);
+    $('closeMember').addEventListener('click', () => $('memberDialog').close());
+    $('cancelMember').addEventListener('click', () => $('memberDialog').close());
+    $('memberForm').addEventListener('submit', submitMember);
+    $('closeOrgInspector').addEventListener('click', () => { state.selectedDepartment = null; $('orgInspector').hidden = true; renderOrg(); });
   }
 
   async function init() {
@@ -1425,6 +1604,7 @@
       can('document.review') ? loadGovernance().catch(() => {}) : Promise.resolve(),
       can('document.read') ? loadJobs().catch(() => {}) : Promise.resolve(),
       can('document.read') ? loadEvaluation().catch(() => {}) : Promise.resolve(),
+      can('audit.read') ? loadOrg().catch(() => {}) : Promise.resolve(),
     ]);
   }
 
