@@ -29,6 +29,9 @@
 - **断点续跑编排**：可选的 LangGraph 引擎按批次 checkpoint，Worker 中途被杀不会重复为已完成的向量化付费。
 - **发布前评测门**：黄金题集复用生产检索路径量化 recall@k、引用命中率与拒答正确率，`block` 模式可阻断未达标发布，越权放行必须留痕。
 - **隐私日志**：日志不记录问题正文、回答正文、查询参数、会话 ID、客户端地址或密钥。
+- **引用与反馈闭环**：每次回答的引用来源自动落 `query_citations`（区分 chunk / knowledge 两种形态并 best-effort 解析 `document_chunk_id`）；用户可对回答评分（positive/negative），写入 `query_feedback` 并按 `(query_id, actor)` 幂等；证据不足时登记 `knowledge_gaps` 知识缺口，供运营闭环。
+- **组织模型懒同步**：OIDC 登录成功后按主体声明幂等落 `users` / `groups` / `user_group_memberships`，管理后台只读展现；`users.subject_id` 用 HMAC 哈希（与 `document_acl` 用户型同构），不存原始 OIDC `sub`。
+- **缺口不复制明文**：`knowledge_gaps` 只保留 `query_id` 弱引用（源 query 删除则 `SET NULL`）与非 PII 摘要（如 `自动登记：insufficient_evidence，路由 cloud`），绝不解密或复制 `query.question` 明文。
 
 ## 架构
 
@@ -152,6 +155,18 @@ IT_QUERY_FIELD_KEY=<至少 16 字符的随机值或 Fernet 密钥>
 | `POST` | `/api/admin/evaluation/runs` | `evaluation.run` | 立即运行评测（`manual` / `pre_publish`） |
 | `GET` | `/api/admin/evaluation/runs` | `document.read` | 查看评测运行与门禁结论 |
 | `GET` | `/api/admin/evaluation/runs/{id}` | `document.read` | 查看逐题结果 |
+| `GET` | `/api/admin/citations` | auditor | 查看回答引用来源（chunk / knowledge 两种形态） |
+| `GET` | `/api/admin/citations/export` | auditor | 导出引用为 CSV/JSON（utf-8-sig，导出动作本身写审计） |
+| `GET` | `/api/admin/feedback` | auditor | 查看用户反馈 |
+| `GET` | `/api/admin/feedback/export` | auditor | 导出反馈为 CSV/JSON |
+| `GET` | `/api/admin/knowledge-gaps` | auditor | 查看知识缺口（弱引用 `query_id` + 非 PII 摘要） |
+| `GET` | `/api/admin/knowledge-gaps/export` | auditor | 导出知识缺口为 CSV/JSON |
+| `POST` | `/api/admin/knowledge-gaps/{id}/resolve` | `document.write` | 标记缺口已闭环（body `{resolved_version_id}`） |
+| `POST` | `/api/admin/knowledge-gaps/{id}/dismiss` | `document.write` | 标记缺口已忽略 |
+| `GET` | `/api/admin/org/users` | auditor | 查看组织用户（HMAC 哈希主体） |
+| `GET` | `/api/admin/org/groups` | auditor | 查看组织组与成员计数 |
+| `GET` | `/api/admin/org/departments` | auditor | 查看部门元数据 |
+| `GET` | `/api/admin/org/users/export` | auditor | 导出组织用户为 CSV/JSON |
 
 ### 文档密级（classification）
 
@@ -319,6 +334,39 @@ IT_EVAL_TOP_K=5
 代价是：**黄金题只能引用 viewer 可见的文档**；受限文档若要在评测中命中，需要给它加上
 `role:viewer`（或等待后续的"知识域"模型，见域 B）。
 
+## 采购硬缺口信号（引用 / 反馈 / 知识缺口 / 组织模型）
+
+回答质量与组织信号不应要求用户额外操作或改动召回热路径。本轮在**不切换 ACL 写入/执行路径、
+不改写召回 SQL** 的前提下，新增 8 张表，并在查询落库与登录环节做**非致命**接线（异常只记
+`WARNING` 日志，绝不阻断用户答案或登录）：
+
+- `query_citations`：一次回答的引用来源，区分 `chunk`（指向 `document_chunks`）与 `knowledge`
+  （指向 `knowledge.md`）两种形态，best-effort 解析 `document_chunk_id` / `document_version_id`；
+  对 `queries.id` 级联删除。
+- `query_feedback`：用户对回答的评分（positive/negative），按 `(query_id, actor_subject_id)`
+  幂等 upsert。
+- `knowledge_gaps`：证据不足（`result.evidence == "insufficient"`）时自动登记的知识缺口；
+  **只存 `query_id` 弱引用（`SET NULL`，源 query 删除不丢缺口）与非 PII 的 `gap_summary`**
+  （如 `自动登记：insufficient_evidence，路由 cloud`），**绝不解密或复制 `query.question` 明文**；
+  状态机 `open → addressed`（resolve，需 `resolved_version_id`）/ `dismissed`（dismiss）。
+- `users` / `groups` / `user_group_memberships` / `departments` / `user_department_record`：
+  最小范围的组织模型。`users.subject_id` 用 HMAC 哈希（与 `document_acl` 用户型同构，零迁移）；
+  `departments` 纯元数据、不进 ACL；不存原始 OIDC `sub`。
+
+接线语义：
+
+- **引用 / 缺口落库**：`/api/query` 在拿到 `result` 后非致命地调用 `record_citations` 与
+  `register_knowledge_gap`；`POST /api/feedback`（需登录 `viewer`，校验 `rating ∈ {positive,negative}`
+  且 `comment ≤ 1000`）调用 `record_feedback`。
+- **登录懒同步**：`/api/auth/oidc/callback` 登录成功后非致命地调用 `sync_org_on_login(principal)`，
+  按主体声明幂等 upsert `users` / `groups` / `user_group_memberships`；失败仅告警，不影响登录。
+- **管理只读展现**：上述信号的列表与导出（CSV 用 `utf-8-sig` BOM、列名 `lower_snake_case`、
+  首列 `id` 末含 `created_at`，与 `audit-events/export` 一致）均经 `audit.read` 鉴权并自审计；
+  缺口 `resolve` / `dismiss` 需 `document.write`。导出动作的 `target_type` 为 `<entity>_export`，
+  缺口闭环/忽略的审计动作为 `knowledge_gap.resolve` / `knowledge_gap.dismiss`。
+
+完整设计见 [采购硬缺口架构](docs/architecture-procurement-gaps.md)，表结构与端点签名以该文档为准。
+
 ## 模型与密钥
 
 回答策略可在管理后台选择：`knowledge_first`（默认，命中后直接返回知识库）、`generative_first`（先按 ACL 检索，再交给模型组织客服回答）或 `hybrid`（简单问题直接返回，复杂问题生成式回答）。生成式提示词只包含当前用户可见的检索片段，并保留来源引用；模型不可用时会降级为确定性知识答案或安全拒答。知识证据不足时，可路由到 Ollama、llama.cpp 或 OpenAI 兼容云供应商。云端密钥可以来自进程环境、未提交的 `.env`，或管理后台加密保存的运行时凭据；接口响应、页面与审计日志不会回显明文。
@@ -388,7 +436,7 @@ node --check web/admin.js
 .venv\Scripts\python -m pip check
 ```
 
-测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、上传边界、路径约束、迁移升降级、混合检索、模型重试、费用账本、日志隐私、知识治理的状态机与召回隔离、索引队列的抢占/心跳回收/重试分类/202 异步导入、导入闭包边界与 LangGraph checkpoint 断点续跑，以及评测门的指标计算、生产检索路径复用、`block` 阻断、越权留痕与基线回归。GitHub Actions 还会执行锁定依赖漏洞扫描（核心与 Worker 两份锁文件）。
+测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、上传边界、路径约束、迁移升降级、混合检索、模型重试、费用账本、日志隐私、知识治理的状态机与召回隔离、索引队列的抢占/心跳回收/重试分类/202 异步导入、导入闭包边界与 LangGraph checkpoint 断点续跑、评测门的指标计算、生产检索路径复用、`block` 阻断、越权留痕与基线回归，以及采购硬缺口信号的引用级联语义、反馈幂等、缺口弱引用（`SET NULL`）与非 PII 模板、组织同步幂等、各管理端点鉴权 403、导出 header/行/自审计/CSV BOM、与缺口 `resolve`/`dismiss` 改状态（真 CASCADE 由 CI 在 PostgreSQL 验证）。GitHub Actions 还会执行锁定依赖漏洞扫描（核心与 Worker 两份锁文件）。
 
 安全问题请参阅 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中提交密钥或企业数据。
 
@@ -410,6 +458,7 @@ node --check web/admin.js
 - [企业架构](docs/enterprise-architecture.md)
 - [业务结构蓝图](docs/business-structure-blueprint.md)（v1 评审稿）
 - [知识治理数据模型](docs/knowledge-governance-data-model.md)（v1 评审稿）
+- [采购硬缺口架构](docs/architecture-procurement-gaps.md)
 - [隔离边界](docs/isolation-boundary.md)
 - [文档导入与检索](docs/document-ingestion.md)
 - [实施路线图](docs/implementation-roadmap.md)
