@@ -448,7 +448,7 @@ class QueryDatabase:
                     ordinal=chunk.ordinal,
                     heading=chunk.heading[:512],
                     page_number=chunk.page_number,
-                    content=chunk.content,
+                    content=self._field_encryptor.encrypt(chunk.content),
                     search_text=lexical_text(f"{chunk.heading} {chunk.content}"),
                     embedding=list(vector),
                     created_at=now,
@@ -484,7 +484,7 @@ class QueryDatabase:
                     ordinal=int(row["ordinal"]),
                     heading=str(row.get("heading") or "")[:512],
                     page_number=row.get("page_number"),
-                    content=str(row.get("content") or ""),
+                    content=self._field_encryptor.encrypt(str(row.get("content") or "")),
                     search_text=lexical_text(f"{row.get('heading') or ''} {row.get('content') or ''}"),
                     embedding=list(row["embedding"]),
                     created_at=now,
@@ -1048,7 +1048,7 @@ class QueryDatabase:
                     "ordinal": chunk.ordinal,
                     "heading": chunk.heading,
                     "page": chunk.page_number,
-                    "content": chunk.content,
+                    "content": self._field_encryptor.decrypt(chunk.content),
                 } for chunk in chunks],
             }
 
@@ -1582,13 +1582,16 @@ class QueryDatabase:
                 ORDER BY score DESC LIMIT :result_limit
             """)
             with self.engine.connect() as connection:
-                return [dict(row) for row in connection.execute(statement, {
+                results = [dict(row) for row in connection.execute(statement, {
                     "query": self._postgres_websearch_query(query), "result_limit": limit,
                     "subject_id": subject_id, "acl_roles": ",".join(roles),
                     "acl_groups": ",".join(groups),
                     "open_classifications": ",".join(sorted(OPEN_CLASSIFICATIONS)),
                     "allow_confidential": allow_confidential,
                 }).mappings().all()]
+            for result in results:
+                result["content"] = self._field_encryptor.decrypt(result["content"])
+            return results
         results = self._portable_hybrid_search(
             query, [0.0] * 1024, max(limit * 4, 20), subject_id, roles, groups,
             allow_confidential,
@@ -1663,7 +1666,10 @@ class QueryDatabase:
                 "open_classifications": ",".join(sorted(OPEN_CLASSIFICATIONS)),
                 "allow_confidential": allow_confidential,
             }).mappings().all()
-        return [dict(row) for row in rows]
+        results = [dict(row) for row in rows]
+        for result in results:
+            result["content"] = self._field_encryptor.decrypt(result["content"])
+        return results
 
     def _portable_hybrid_search(self, query: str, embedding: list[float], limit: int,
                                 subject_id: str = "legacy", roles=(), groups=(),
@@ -1739,7 +1745,7 @@ class QueryDatabase:
                 "id": chunk.id, "title": document.title, "source_key": document.source_key,
                 "version": version,
                 "ordinal": chunk.ordinal, "heading": chunk.heading,
-                "page_number": chunk.page_number, "content": chunk.content,
+                "page_number": chunk.page_number, "content": self._field_encryptor.decrypt(chunk.content),
                 "lexical_rank": lexical_rank.get(chunk.id),
                 "semantic_rank": semantic_rank[chunk.id],
                 "similarity": similarity, "score": score,
