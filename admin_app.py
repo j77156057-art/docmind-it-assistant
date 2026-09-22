@@ -328,23 +328,23 @@ def create_admin_app(settings: AppSettings | None = None,
             request_id_context.reset(token)
 
     @application.get("/")
-    async def admin_index():
+    def admin_index():
         return FileResponse(config.admin_index_path)
 
     @application.get("/login")
-    async def login_page():
+    def login_page():
         return FileResponse(config.project_root / "web" / "login.html")
 
     @application.get("/assets/login.css")
-    async def login_styles():
+    def login_styles():
         return FileResponse(config.project_root / "web" / "login.css", media_type="text/css")
 
     @application.get("/assets/login.js")
-    async def login_script():
+    def login_script():
         return FileResponse(config.project_root / "web" / "login.js", media_type="text/javascript")
 
     @application.get("/api/auth/config")
-    async def auth_config():
+    def auth_config():
         return {
             "ok": True,
             "mode": config.auth_mode,
@@ -355,7 +355,7 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.get("/api/auth/oidc/start")
-    async def oidc_start():
+    def oidc_start():
         if not authenticator.login_enabled:
             raise HTTPException(status_code=404, detail="未启用 OIDC 登录")
         try:
@@ -375,7 +375,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return response
 
     @application.get("/api/auth/oidc/callback")
-    async def oidc_callback(request: Request):
+    def oidc_callback(request: Request):
         if not authenticator.login_enabled:
             raise HTTPException(status_code=404, detail="未启用 OIDC 登录")
         provider_error = request.query_params.get("error", "")
@@ -404,7 +404,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return response
 
     @application.post("/api/auth/login")
-    async def auth_login(payload: dict):
+    def auth_login(payload: dict):
         if config.auth_mode != "local":
             raise HTTPException(status_code=400, detail="当前认证模式不使用本地登录")
         try:
@@ -417,7 +417,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return response
 
     @application.post("/api/auth/guest")
-    async def auth_guest(request: Request):
+    def auth_guest(request: Request):
         if config.auth_mode != "local" or not config.guest_login_enabled:
             raise HTTPException(status_code=403, detail="游客登录未启用")
         query_url = f"{request.url.scheme}://{request.url.hostname}:{config.port}/"
@@ -430,27 +430,27 @@ def create_admin_app(settings: AppSettings | None = None,
         return response
 
     @application.post("/api/auth/logout")
-    async def auth_logout():
+    def auth_logout():
         response = JSONResponse({"ok": True, "redirect": authenticator.logout_url()})
         response.delete_cookie(SESSION_COOKIE)
         return response
 
     @application.get("/assets/admin.css")
-    async def admin_styles():
+    def admin_styles():
         return FileResponse(config.admin_index_path.with_name("admin.css"), media_type="text/css")
 
     @application.get("/assets/admin.js")
-    async def admin_script():
+    def admin_script():
         return FileResponse(
             config.admin_index_path.with_name("admin.js"), media_type="text/javascript",
         )
 
     @application.get("/health/live")
-    async def health_live():
+    def health_live():
         return {"ok": True, "status": "live"}
 
     @application.get("/health/ready")
-    async def health_ready():
+    def health_ready():
         database_ok, database_reason = database.healthcheck()
         embedding_ok, embedding_reason = embeddings.healthcheck()
         auth_ok, auth_reason = authenticator.healthcheck()
@@ -500,7 +500,7 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/me")
-    async def me(principal: Principal = Depends(require_capability("document.read"))):
+    def me(principal: Principal = Depends(require_capability("document.read"))):
         return {
             "ok": True,
             "subject_id": principal.subject_id,
@@ -524,7 +524,7 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.get("/api/admin/documents")
-    async def documents(_principal: Principal = Depends(require_capability("document.read"))):
+    def documents(_principal: Principal = Depends(require_capability("document.read"))):
         items = []
         for item in database.list_documents():
             if item["source_key"] == "builtin/knowledge.md" and item["version"] == 1:
@@ -554,7 +554,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return sources.resolve(item["document_id"], item["version"])
 
     @application.get("/api/admin/documents/{document_id}/versions/{version}/source")
-    async def document_source(document_id: int, version: int,
+    def document_source(document_id: int, version: int,
                               download: bool = Query(False),
                               principal: Principal = Depends(require_capability("document.read"))):
         item = next((row for row in database.list_documents()
@@ -583,7 +583,7 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/admin/documents/{document_id}/acl")
-    async def document_acl(document_id: int,
+    def document_acl(document_id: int,
                            _principal: Principal = Depends(require_capability("document.read"))):
         try:
             return {"ok": True, **database.document_access(document_id)}
@@ -591,7 +591,7 @@ def create_admin_app(settings: AppSettings | None = None,
             raise HTTPException(status_code=404, detail=str(exc)) from None
 
     @application.put("/api/admin/documents/{document_id}/acl")
-    async def replace_document_acl(document_id: int, payload: DocumentAclReq,
+    def replace_document_acl(document_id: int, payload: DocumentAclReq,
                                    principal: Principal = Depends(require_capability("acl.write"))):
         try:
             database.set_document_acl(
@@ -606,13 +606,13 @@ def create_admin_app(settings: AppSettings | None = None,
             raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @application.get("/api/admin/governance/pending")
-    async def governance_pending(limit: int = Query(100, ge=1, le=200),
+    def governance_pending(limit: int = Query(100, ge=1, le=200),
                                  _principal: Principal = Depends(
                                      require_capability("document.review"))):
         return {"ok": True, "items": database.pending_review_versions(limit)}
 
     @application.get("/api/admin/documents/{document_id}/versions/{version}/reviews")
-    async def version_reviews(document_id: int, version: int,
+    def version_reviews(document_id: int, version: int,
                               _principal: Principal = Depends(
                                   require_capability("document.read"))):
         try:
@@ -622,7 +622,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "items": items}
 
     @application.get("/api/admin/documents/{document_id}/versions/{version}/preview")
-    async def version_preview(document_id: int, version: int,
+    def version_preview(document_id: int, version: int,
                               limit: int = Query(200, ge=1, le=500),
                               principal: Principal = Depends(
                                   require_capability("document.review"))):
@@ -642,7 +642,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, **payload}
 
     @application.post("/api/admin/documents/{document_id}/versions/{version}/review")
-    async def review_version(document_id: int, version: int, payload: ReviewDecisionReq,
+    def review_version(document_id: int, version: int, payload: ReviewDecisionReq,
                              principal: Principal = Depends(
                                  require_capability("document.review"))):
         try:
@@ -679,7 +679,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "version": state}
 
     @application.post("/api/admin/documents/{document_id}/versions/{version}/publish")
-    async def publish_version(document_id: int, version: int, payload: PublishReq,
+    def publish_version(document_id: int, version: int, payload: PublishReq,
                               principal: Principal = Depends(
                                   require_capability("document.publish"))):
         request_id = request_id_context.get()
@@ -698,8 +698,7 @@ def create_admin_app(settings: AppSettings | None = None,
             except ValueError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from None
             try:
-                gate = await run_in_threadpool(
-                    evaluations.run,
+                gate = evaluations.run(
                     trigger="pre_publish",
                     document_version_id=version_pk,
                     actor_subject_id=principal.subject_id,
@@ -752,7 +751,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "version": state, "evaluation": gate}
 
     @application.post("/api/admin/documents/{document_id}/versions/{version}/withdraw")
-    async def withdraw_version(document_id: int, version: int, payload: ReasonReq,
+    def withdraw_version(document_id: int, version: int, payload: ReasonReq,
                                principal: Principal = Depends(
                                    require_capability("document.withdraw"))):
         try:
@@ -778,7 +777,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "version": state}
 
     @application.post("/api/admin/documents/{document_id}/versions/{version}/rollback")
-    async def rollback_version(document_id: int, version: int, payload: ReasonReq,
+    def rollback_version(document_id: int, version: int, payload: ReasonReq,
                                principal: Principal = Depends(
                                    require_capability("document.rollback"))):
         try:
@@ -804,7 +803,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "version": state}
 
     @application.get("/api/admin/ingestion/jobs")
-    async def ingestion_jobs(status: str = Query("", max_length=16),
+    def ingestion_jobs(status: str = Query("", max_length=16),
                              limit: int = Query(50, ge=1, le=200),
                              _principal: Principal = Depends(
                                  require_capability("document.read"))):
@@ -822,7 +821,7 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.post("/api/admin/ingestion/jobs/{job_id}/retry")
-    async def retry_ingestion_job(job_id: int,
+    def retry_ingestion_job(job_id: int,
                                   principal: Principal = Depends(
                                       require_capability("document.write"))):
         try:
@@ -842,7 +841,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "job": job}
 
     @application.post("/api/admin/ingestion/jobs/{job_id}/cancel")
-    async def cancel_ingestion_job(job_id: int,
+    def cancel_ingestion_job(job_id: int,
                                    principal: Principal = Depends(
                                        require_capability("document.write"))):
         try:
@@ -862,7 +861,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "job": job}
 
     @application.get("/api/admin/evaluation/cases")
-    async def evaluation_cases(limit: int = Query(200, ge=1, le=500),
+    def evaluation_cases(limit: int = Query(200, ge=1, le=500),
                                _principal: Principal = Depends(
                                    require_capability("document.read"))):
         return {
@@ -878,7 +877,7 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.put("/api/admin/evaluation/cases")
-    async def save_evaluation_case(payload: EvaluationCaseReq,
+    def save_evaluation_case(payload: EvaluationCaseReq,
                                    principal: Principal = Depends(
                                        require_capability("evaluation.run"))):
         try:
@@ -905,7 +904,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "case": case}
 
     @application.delete("/api/admin/evaluation/cases/{case_id}")
-    async def remove_evaluation_case(case_id: int,
+    def remove_evaluation_case(case_id: int,
                                      principal: Principal = Depends(
                                          require_capability("evaluation.run"))):
         try:
@@ -925,7 +924,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True}
 
     @application.post("/api/admin/evaluation/runs")
-    async def create_evaluation_run(payload: EvaluationRunReq,
+    def create_evaluation_run(payload: EvaluationRunReq,
                                     principal: Principal = Depends(
                                         require_capability("evaluation.run"))):
         request_id = request_id_context.get()
@@ -935,8 +934,7 @@ def create_admin_app(settings: AppSettings | None = None,
         ):
             raise HTTPException(status_code=400, detail="发布前评测必须指定文档版本")
         try:
-            run = await run_in_threadpool(
-                evaluations.run,
+            run = evaluations.run(
                 trigger=payload.trigger,
                 document_version_id=payload.document_version_id,
                 actor_subject_id=principal.subject_id,
@@ -957,7 +955,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "run": run}
 
     @application.get("/api/admin/evaluation/runs")
-    async def evaluation_runs(limit: int = Query(50, ge=1, le=200),
+    def evaluation_runs(limit: int = Query(50, ge=1, le=200),
                               document_version_id: int | None = Query(None),
                               _principal: Principal = Depends(
                                   require_capability("document.read"))):
@@ -969,7 +967,7 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.get("/api/admin/evaluation/runs/{run_id}")
-    async def evaluation_run_detail(run_id: int,
+    def evaluation_run_detail(run_id: int,
                                     _principal: Principal = Depends(
                                         require_capability("document.read"))):
         try:
@@ -979,12 +977,12 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "run": detail}
 
     @application.get("/api/admin/audit-events")
-    async def audit_events(limit: int = 100,
+    def audit_events(limit: int = 100,
                            _principal: Principal = Depends(require_capability("audit.read"))):
         return {"ok": True, "items": database.audit_events(limit)}
 
     @application.get("/api/admin/audit-events/export")
-    async def audit_events_export(
+    def audit_events_export(
         export_format: str = "csv",
         start: datetime | None = None,
         end: datetime | None = None,
@@ -1076,14 +1074,14 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/admin/citations")
-    async def admin_citations(
+    def admin_citations(
         limit: int = 200,
         _principal: Principal = Depends(require_capability("audit.read"))):
         """List persisted answer citations."""
         return {"ok": True, "items": database.citations(limit=limit)}
 
     @application.get("/api/admin/citations/export")
-    async def admin_citations_export(
+    def admin_citations_export(
         export_format: str = "csv", start: datetime | None = None, end: datetime | None = None,
         query_id: int | None = None, limit: int = 2000,
         principal: Principal = Depends(require_capability("audit.read"))):
@@ -1096,14 +1094,14 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/admin/feedback")
-    async def admin_feedback(
+    def admin_feedback(
         rating: str | None = None, actor: str | None = None, limit: int = 200,
         _principal: Principal = Depends(require_capability("audit.read"))):
         """List user feedback."""
         return {"ok": True, "items": database.feedback(rating=rating, actor=actor, limit=limit)}
 
     @application.get("/api/admin/feedback/export")
-    async def admin_feedback_export(
+    def admin_feedback_export(
         export_format: str = "csv", rating: str | None = None, actor: str | None = None,
         limit: int = 2000, principal: Principal = Depends(require_capability("audit.read"))):
         if export_format not in {"csv", "json"}:
@@ -1115,14 +1113,14 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/admin/knowledge-gaps")
-    async def admin_knowledge_gaps(
+    def admin_knowledge_gaps(
         gap_type: str | None = None, status: str | None = None, limit: int = 200,
         _principal: Principal = Depends(require_capability("audit.read"))):
         """List auto-registered knowledge gaps."""
         return {"ok": True, "items": database.knowledge_gaps(gap_type=gap_type, status=status, limit=limit)}
 
     @application.get("/api/admin/knowledge-gaps/export")
-    async def admin_knowledge_gaps_export(
+    def admin_knowledge_gaps_export(
         export_format: str = "csv", gap_type: str | None = None, status: str | None = None,
         limit: int = 2000, principal: Principal = Depends(require_capability("audit.read"))):
         if export_format not in {"csv", "json"}:
@@ -1135,7 +1133,7 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.post("/api/admin/knowledge-gaps/{gap_id}/resolve")
-    async def admin_resolve_knowledge_gap(
+    def admin_resolve_knowledge_gap(
         gap_id: int, payload: KnowledgeGapResolveReq,
         principal: Principal = Depends(require_capability("document.write"))):
         """Close a gap as addressed, linking the version that filled it. Self-audited."""
@@ -1149,7 +1147,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True}
 
     @application.post("/api/admin/knowledge-gaps/{gap_id}/dismiss")
-    async def admin_dismiss_knowledge_gap(
+    def admin_dismiss_knowledge_gap(
         gap_id: int, principal: Principal = Depends(require_capability("document.write"))):
         """Dismiss a gap. Self-audited."""
         try:
@@ -1161,25 +1159,25 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True}
 
     @application.get("/api/admin/org/users")
-    async def admin_org_users(
+    def admin_org_users(
         limit: int = 500, _principal: Principal = Depends(require_capability("audit.read"))):
         """List org users (read-only view over the lazily-synced org model)."""
         return {"ok": True, "items": database.org_users(limit=limit)}
 
     @application.get("/api/admin/org/groups")
-    async def admin_org_groups(
+    def admin_org_groups(
         limit: int = 500, _principal: Principal = Depends(require_capability("audit.read"))):
         """List org groups with member counts."""
         return {"ok": True, "items": database.org_groups(limit=limit)}
 
     @application.get("/api/admin/org/departments")
-    async def admin_org_departments(
+    def admin_org_departments(
         limit: int = 500, _principal: Principal = Depends(require_capability("audit.read"))):
         """List org departments (metadata only)."""
         return {"ok": True, "items": database.org_departments(limit=limit)}
 
     @application.get("/api/admin/org/users/export")
-    async def admin_org_users_export(
+    def admin_org_users_export(
         export_format: str = "csv", limit: int = 2000,
         principal: Principal = Depends(require_capability("audit.read"))):
         if export_format not in {"csv", "json"}:
@@ -1191,7 +1189,7 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/admin/org/groups/export")
-    async def admin_org_groups_export(
+    def admin_org_groups_export(
         export_format: str = "csv", limit: int = 2000,
         principal: Principal = Depends(require_capability("audit.read"))):
         if export_format not in {"csv", "json"}:
@@ -1203,7 +1201,7 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.get("/api/admin/org/departments/export")
-    async def admin_org_departments_export(
+    def admin_org_departments_export(
         export_format: str = "csv", limit: int = 2000,
         principal: Principal = Depends(require_capability("audit.read"))):
         if export_format not in {"csv", "json"}:
@@ -1216,7 +1214,7 @@ def create_admin_app(settings: AppSettings | None = None,
         )
 
     @application.post("/api/admin/org/departments")
-    async def admin_org_department_create(
+    def admin_org_department_create(
         payload: DepartmentCreateReq,
         principal: Principal = Depends(require_capability("acl.write"))):
         """Create (upsert) a department. Departments decide document visibility via the
@@ -1233,7 +1231,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "department_key": payload.department_key}
 
     @application.delete("/api/admin/org/departments/{department_key}")
-    async def admin_org_department_delete(
+    def admin_org_department_delete(
         department_key: str,
         principal: Principal = Depends(require_capability("acl.write"))):
         """Delete a department; its members are removed (FK cascade on PG, explicit on SQLite)."""
@@ -1248,7 +1246,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "department_key": department_key}
 
     @application.post("/api/admin/org/departments/{department_key}/members")
-    async def admin_org_department_add_member(
+    def admin_org_department_add_member(
         department_key: str, payload: DepartmentMemberReq,
         principal: Principal = Depends(require_capability("acl.write"))):
         """Add a user to a department. Identify the member by ``subject_id`` or ``oidc_sub``
@@ -1264,7 +1262,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "department_key": department_key}
 
     @application.delete("/api/admin/org/departments/{department_key}/members/{subject_id}")
-    async def admin_org_department_remove_member(
+    def admin_org_department_remove_member(
         department_key: str, subject_id: str,
         principal: Principal = Depends(require_capability("acl.write"))):
         """Remove a user from a department."""
@@ -1279,7 +1277,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, "department_key": department_key, "subject_id": subject_id}
 
     @application.get("/api/admin/retention/preview")
-    async def retention_preview(
+    def retention_preview(
         principal: Principal = Depends(require_capability("audit.read")),
     ):
         """Show how many documents the next purge would touch, without changing anything.
@@ -1302,7 +1300,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, **preview}
 
     @application.post("/api/admin/retention/purge")
-    async def retention_purge(
+    def retention_purge(
         payload: RetentionPurgeReq,
         principal: Principal = Depends(require_capability("document.write")),
     ):
@@ -1330,7 +1328,7 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, **result}
 
     @application.get("/api/admin/metrics")
-    async def metrics(_principal: Principal = Depends(require_capability("audit.read"))):
+    def metrics(_principal: Principal = Depends(require_capability("audit.read"))):
         """Process-local observability snapshot: request counts/latency, queue depth, model spend."""
         snapshot = get_metrics().snapshot()
         snapshot["ingestion_queue_depth"] = database.count_ingestion_jobs(status="queued")
@@ -1339,17 +1337,16 @@ def create_admin_app(settings: AppSettings | None = None,
         return {"ok": True, **snapshot}
 
     @application.get("/api/admin/model-config")
-    async def model_config(_principal: Principal = Depends(require_capability("usage.read"))):
+    def model_config(_principal: Principal = Depends(require_capability("usage.read"))):
         active = models.status()
-        runtime_status = await run_in_threadpool(
-            runtime.status, active, models.base_url({**active, "route": active["mode"]}),
+        runtime_status = runtime.status(
+            active, models.base_url({**active, "route": active["mode"]}),
             models.credential(active["provider"]),
         )
         local_models = {}
         for provider in ("ollama", "llamacpp"):
             provider_route = models._selection("local", provider, "")
-            local_models[provider] = await run_in_threadpool(
-                runtime.available_models,
+            local_models[provider] = runtime.available_models(
                 provider,
                 models.base_url({**provider_route, "route": "local"}),
             )
@@ -1380,7 +1377,7 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.put("/api/admin/model-config")
-    async def update_model_config(payload: ModelConfigReq,
+    def update_model_config(payload: ModelConfigReq,
                                   principal: Principal = Depends(require_capability("model.write"))):
         response_strategy = payload.response_strategy or models.response_strategy()
         target_ref = f"{payload.mode}:{payload.provider}:{payload.model}:{response_strategy}"
@@ -1399,8 +1396,7 @@ def create_admin_app(settings: AppSettings | None = None,
             )
             raise HTTPException(status_code=400, detail=str(exc)) from None
         try:
-            runtime_status = await run_in_threadpool(
-                runtime.activate,
+            runtime_status = runtime.activate(
                 selected,
                 models.base_url({**selected, "route": selected["mode"]}),
                 payload.api_key.strip() or models.credential(selected["provider"]),
@@ -1434,16 +1430,16 @@ def create_admin_app(settings: AppSettings | None = None,
         }
 
     @application.get("/api/admin/artifacts")
-    async def list_artifacts(_principal: Principal = Depends(require_capability("artifact.read"))):
-        return {"ok": True, "items": await run_in_threadpool(artifacts.list)}
+    def list_artifacts(_principal: Principal = Depends(require_capability("artifact.read"))):
+        return {"ok": True, "items": artifacts.list()}
 
     @application.post("/api/admin/artifacts")
-    async def create_artifact(payload: ArtifactCreateReq,
+    def create_artifact(payload: ArtifactCreateReq,
                               principal: Principal = Depends(require_capability("artifact.write"))):
         request_id = request_id_context.get()
         target_ref = payload.filename
         try:
-            result = await run_in_threadpool(artifacts.create, payload.model_dump())
+            result = artifacts.create(payload.model_dump())
             target_ref = result["filename"]
             database.record_audit_event(
                 actor_subject_id=principal.subject_id,
@@ -1466,7 +1462,7 @@ def create_admin_app(settings: AppSettings | None = None,
             raise HTTPException(status_code=400, detail=str(exc)) from None
 
     @application.get("/api/admin/artifacts/{filename}")
-    async def download_artifact(filename: str,
+    def download_artifact(filename: str,
                                 _principal: Principal = Depends(require_capability("artifact.read"))):
         try:
             target = artifacts.resolve(filename)

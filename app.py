@@ -198,23 +198,23 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
             request_id_context.reset(context_token)
 
     @application.get("/")
-    async def index():
+    def index():
         return FileResponse(config.web_index_path)
 
     @application.get("/login")
-    async def login_page():
+    def login_page():
         return FileResponse(config.project_root / "web" / "login.html")
 
     @application.get("/assets/login.css")
-    async def login_styles():
+    def login_styles():
         return FileResponse(config.project_root / "web" / "login.css", media_type="text/css")
 
     @application.get("/assets/login.js")
-    async def login_script():
+    def login_script():
         return FileResponse(config.project_root / "web" / "login.js", media_type="text/javascript")
 
     @application.get("/api/auth/config")
-    async def auth_config():
+    def auth_config():
         return {
             "ok": True,
             "mode": config.auth_mode,
@@ -225,7 +225,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         }
 
     @application.get("/api/auth/oidc/start")
-    async def oidc_start():
+    def oidc_start():
         if not authenticator.login_enabled:
             raise HTTPException(status_code=404, detail="未启用 OIDC 登录")
         try:
@@ -245,7 +245,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         return response
 
     @application.get("/api/auth/oidc/callback")
-    async def oidc_callback(request: Request):
+    def oidc_callback(request: Request):
         if not authenticator.login_enabled:
             raise HTTPException(status_code=404, detail="未启用 OIDC 登录")
         provider_error = request.query_params.get("error", "")
@@ -280,7 +280,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         return response
 
     @application.post("/api/auth/login")
-    async def auth_login(payload: dict):
+    def auth_login(payload: dict):
         if config.auth_mode != "local":
             raise HTTPException(status_code=400, detail="当前认证模式不使用本地登录")
         try:
@@ -293,7 +293,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         return response
 
     @application.post("/api/auth/guest")
-    async def auth_guest():
+    def auth_guest():
         if config.auth_mode != "local" or not config.guest_login_enabled:
             raise HTTPException(status_code=403, detail="游客登录未启用")
         response = JSONResponse({"ok": True, "redirect": "/"})
@@ -305,17 +305,17 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         return response
 
     @application.post("/api/auth/logout")
-    async def auth_logout():
+    def auth_logout():
         response = JSONResponse({"ok": True, "redirect": authenticator.logout_url()})
         response.delete_cookie(SESSION_COOKIE)
         return response
 
     @application.get("/health/live")
-    async def health_live():
+    def health_live():
         return {"ok": True, "status": "live"}
 
     @application.get("/health/ready")
-    async def health_ready():
+    def health_ready():
         database_ok, database_reason = database.healthcheck()
         model_ok, model_reason = models.healthcheck()
         embedding_ok, embedding_reason = retriever.healthcheck()
@@ -390,14 +390,14 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         return JSONResponse({"ok": True})
 
     @application.get("/api/history")
-    async def history(session_id: str = "default", limit: int = 20,
+    def history(session_id: str = "default", limit: int = 20,
                       principal: Principal = Depends(viewer)):
         return {"ok": True, "items": database.history(
             session_id, limit, owner_subject_id=principal.subject_id,
         )}
 
     @application.get("/api/me")
-    async def me(principal: Principal = Depends(authenticated)):
+    def me(principal: Principal = Depends(authenticated)):
         return {
             "ok": True,
             "subject_id": principal.subject_id,
@@ -407,18 +407,18 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         }
 
     @application.get("/api/runtime/model")
-    async def model_status(_principal: Principal = Depends(viewer)):
+    def model_status(_principal: Principal = Depends(viewer)):
         return {"ok": True, **models.status()}
 
     @application.get("/api/usage/summary")
-    async def usage_summary(session_id: str = "default",
+    def usage_summary(session_id: str = "default",
                             principal: Principal = Depends(viewer)):
         return {"ok": True, **database.usage_summary(
             session_id, owner_subject_id=principal.subject_id,
         )}
 
     @application.get("/api/usage/ledger")
-    async def usage_ledger(session_id: str = "default", limit: int = 50,
+    def usage_ledger(session_id: str = "default", limit: int = 50,
                            principal: Principal = Depends(auditor)):
         return {"ok": True, "items": database.usage_ledger(
             session_id, limit, owner_subject_id=principal.subject_id,
