@@ -98,7 +98,7 @@
 ### T1：建迁移 + 存量回填
 - **文件**：`migrations/versions/20260922_0014_document_chunk_encryption.py`（新建）。
 - **做什么**：按 §4 实现 `upgrade()`（分批幂等加密回填）、`downgrade()`（解密回明文 + 注释）。
-- **验收**：`alembic upgrade head` 后存量行全部带 `enc:v1:` 前缀；重复运行幂等；`alembic downgrade -1` 可回明文（在测试库验证）。
+- **验收**：`alembic upgrade head` 后存量行全部带 `enc:v1:` 前缀；重复运行幂等；`downgrade()` 为 `pass`（保留密文，生产不回退到明文）。
 
 ### T2：DB 写点加密
 - **文件**：`backend/database.py`（W1 ~451、W2 ~487）。
@@ -136,4 +136,4 @@
 1. **staging 明文落盘**：`worker/graph.py:94` 将明文 `content` 写入磁盘 staging JSON（用于断点续传）。本期不加密（属临时产物，随任务完成清理），但属已知明文落盘点；是否纳入后续加固待定。
 2. **重新向量化风险**：`ingestion/service.py:89/208` 用内存明文 chunk 生成 embedding，正确；若未来改为"从 DB 读 chunk 重算 embedding"将拿到密文。仅注释提醒，不纳入本期。
 3. **迁移与代码部署顺序**：迁移加密存量行后，若旧版代码（未部署 T2/T3）仍在运行会读到密文显示异常；需迁移与代码同 PR/同批次发布。
-4. **downgrade 保守策略**：若团队偏好"生产不回滚"，可令 `downgrade()` 为 `pass`（保留密文），按 §4 注释执行。
+4. **downgrade 策略（已定）**：`downgrade()` 为 `pass`（保留密文），生产不回退到明文；与 §4 一致，代码已落地。

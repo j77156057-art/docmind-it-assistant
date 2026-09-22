@@ -564,7 +564,7 @@ class UserRecord(Base):
     email: Mapped[str | None] = mapped_column(String(256), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # 原始 OIDC sub（明文），与 HMAC subject_id 并存；用于部门维护端点按 oidc_sub 解析成员。
+    # 应用内 subject_id 的 HMAC 派生哈希值（与 subject_id 同值，非原始 OIDC sub）；用于部门维护端点按 oidc_sub 解析成员。原始 sub 不落库、不进 repr。
     # 可空：non-OIDC 登录（local/trusted_headers/guest）不写入。
     oidc_sub: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

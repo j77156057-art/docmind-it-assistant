@@ -30,7 +30,7 @@
    - 检索 / ACL 检查时调用方的 `groups` 与 `departments` 从组织表实时查询；**claims 仅登录时写入组织表，不再作为执行依据**。
    - `roles` 无对应表，仍来自 claims（`principal.acl_roles`），**不受切换影响，务必保留**。
 3. **附加项（本轮纳入）**
-   - `users` 加 `oidc_sub` 列存原始 OIDC `sub`（明文），与 HMAC `subject_id` 并存。
+   - `users` 加 `oidc_sub` 列，存**应用内 `subject_id` 的 HMAC 派生哈希值**（与 `subject_id` 同值，非原始 OIDC `sub`）；用于部门维护端点按 `oidc_sub` 解析成员。原始 `sub` 不落库、不进 `repr`。
    - 部门维护写端（P1-5）：增删部门、增删部门成员。
 4. **部门同步来源**
    - OIDC `department` 声明 → `user_department`（`sync_org_on_login` 扩展）；声明名**配置化**，默认 `department`，与现有 `group_claim`/`acl_groups` 处理一致；维护端点作为补充手段。
