@@ -125,6 +125,13 @@ class AppSettings(BaseModel):
     chunk_max_chars: int = Field(default=1200, ge=200, le=8000)
     chunk_overlap_chars: int = Field(default=150, ge=0, le=2000)
     retrieval_top_k: int = Field(default=5, ge=1, le=20)
+    rerank_enabled: bool = True
+    rerank_mode: Literal["lexical", "api"] = "lexical"
+    rerank_base_url: str = ""
+    rerank_model: str = ""
+    rerank_api_key: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
+    rerank_top_n: int = Field(default=20, ge=1, le=100)
+    chunk_child_max_chars: int = Field(default=400, ge=80, le=2000)
     governance_mode: Literal["direct", "review"] = "direct"
     governance_require_separation_of_duties: bool = True
     governance_allow_admin_override: bool = False
@@ -148,6 +155,8 @@ class AppSettings(BaseModel):
     evaluation_min_citation_accuracy: float = Field(default=0.9, ge=0.0, le=1.0)
     evaluation_max_regression: float = Field(default=0.05, ge=0.0, le=1.0)
     evaluation_top_k: int = Field(default=5, ge=1, le=20)
+    evaluation_faithfulness_enabled: bool = True
+    evaluation_min_faithfulness: float = Field(default=0.7, ge=0.0, le=1.0)
     auth_mode: Literal["development", "trusted_headers", "oidc", "local"] = "development"
     local_username: str = "admin"
     local_password_hash: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
@@ -332,6 +341,13 @@ class AppSettings(BaseModel):
             chunk_max_chars=int(read("IT_CHUNK_MAX_CHARS", "1200")),
             chunk_overlap_chars=int(read("IT_CHUNK_OVERLAP_CHARS", "150")),
             retrieval_top_k=int(read("IT_RETRIEVAL_TOP_K", "5")),
+            rerank_enabled=_bool(read("IT_RERANK_ENABLED", "true")),
+            rerank_mode=read("IT_RERANK_MODE", "lexical").strip().lower(),
+            rerank_base_url=read("IT_RERANK_BASE_URL", "").strip(),
+            rerank_model=read("IT_RERANK_MODEL", "").strip(),
+            rerank_api_key=SecretStr(read("IT_RERANK_API_KEY", "").strip()),
+            rerank_top_n=int(read("IT_RERANK_TOP_N", "20")),
+            chunk_child_max_chars=int(read("IT_CHUNK_CHILD_MAX_CHARS", "400")),
             governance_mode=read("IT_GOVERNANCE_MODE", "direct").strip().lower(),
             governance_require_separation_of_duties=_bool(
                 read("IT_GOVERNANCE_REQUIRE_SEPARATION_OF_DUTIES", "true"),
@@ -363,6 +379,8 @@ class AppSettings(BaseModel):
             ),
             evaluation_max_regression=float(read("IT_EVAL_MAX_REGRESSION", "0.05")),
             evaluation_top_k=int(read("IT_EVAL_TOP_K", "5")),
+            evaluation_faithfulness_enabled=_bool(read("IT_EVAL_FAITHFULNESS_ENABLED", "true")),
+            evaluation_min_faithfulness=float(read("IT_EVAL_MIN_FAITHFULNESS", "0.7")),
             auth_mode=read("IT_AUTH_MODE", "development").strip().lower(),
             local_username=read("IT_LOCAL_USERNAME", "admin").strip(),
             local_password_hash=SecretStr(read("IT_LOCAL_PASSWORD_HASH", "").strip()),
@@ -437,6 +455,12 @@ class AppSettings(BaseModel):
             "ingestion_job_timeout_seconds": self.ingestion_job_timeout_seconds,
             "slow_request_ms": self.slow_request_ms,
             "slow_db_ms": self.slow_db_ms,
+            "rerank_enabled": self.rerank_enabled,
+            "rerank_mode": self.rerank_mode,
+            "rerank_base_url": self.rerank_base_url,
+            "rerank_model": self.rerank_model,
+            "rerank_top_n": self.rerank_top_n,
+            "chunk_child_max_chars": self.chunk_child_max_chars,
             "query_daily_quota": self.query_daily_quota,
             "retention_days": self.retention_days,
             "retention_grace_days": self.retention_grace_days,
@@ -445,6 +469,8 @@ class AppSettings(BaseModel):
             "evaluation_min_recall": self.evaluation_min_recall,
             "evaluation_min_citation_accuracy": self.evaluation_min_citation_accuracy,
             "evaluation_max_regression": self.evaluation_max_regression,
+            "evaluation_faithfulness_enabled": self.evaluation_faithfulness_enabled,
+            "evaluation_min_faithfulness": self.evaluation_min_faithfulness,
             "auth_mode": self.auth_mode,
             "log_level": self.log_level,
             "log_json": self.log_json,

@@ -221,6 +221,7 @@ class DocumentChunkRecord(Base):
     heading: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     search_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(EmbeddingVector(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

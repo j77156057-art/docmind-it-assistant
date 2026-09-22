@@ -39,6 +39,7 @@ class DocumentProcessingError(RuntimeError):
 class DocumentIngestionService:
     def __init__(self, database: QueryDatabase, embeddings: EmbeddingClient, *,
                  max_bytes: int, chunk_max_chars: int, chunk_overlap_chars: int,
+                 chunk_child_max_chars: int = 400,
                  max_characters: int = 2_000_000, max_pages: int = 500,
                  require_review: bool = False):
         self.database = database
@@ -46,6 +47,7 @@ class DocumentIngestionService:
         self.max_bytes = max_bytes
         self.chunk_max_chars = chunk_max_chars
         self.chunk_overlap_chars = chunk_overlap_chars
+        self.chunk_child_max_chars = chunk_child_max_chars
         self.max_characters = max_characters
         self.max_pages = max_pages
         # Governance mode "review": indexing stops at `staged` and waits for a human decision.
@@ -70,6 +72,7 @@ class DocumentIngestionService:
         )
         chunks = chunk_document(
             parsed, max_chars=self.chunk_max_chars, overlap_chars=self.chunk_overlap_chars,
+            child_max_chars=self.chunk_child_max_chars,
         )
         version = self.database.begin_document_import(
             source_key=(source_key.strip() or file_path.as_uri()),
@@ -159,6 +162,7 @@ class DocumentIngestionService:
             )
             chunks = chunk_document(
                 parsed, max_chars=self.chunk_max_chars, overlap_chars=self.chunk_overlap_chars,
+                child_max_chars=self.chunk_child_max_chars,
             )
         except Exception as exc:  # noqa: BLE001 - parsers raise library-specific errors
             # A corrupt or unsupported file is deterministic: never spend the retry budget on it.

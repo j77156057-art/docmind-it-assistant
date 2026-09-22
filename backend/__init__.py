@@ -14,6 +14,7 @@ from .model_gateway import GatewayAttempt, GatewayResult, ModelGateway, ModelGat
 from .model_runtime import ModelRuntime, ModelRuntimeError
 from .models import ModelRouter
 from .retrieval import HybridRetriever
+from .rerank import Reranker, build_reranker
 from .pricing import cost_cny, price_for
 from .providers import PROVIDERS, ProviderSpec, get_provider, model_context_window
 
@@ -31,6 +32,6 @@ __all__ = [
     "JsonFormatter", "configure_logging", "log_event", "request_id_context",
     "GatewayAttempt", "GatewayResult", "ModelGateway", "ModelGatewayError",
     "EmbeddingClient", "EmbeddingError", "EmbeddingResult", "build_embedding_client",
-    "HybridRetriever",
+    "HybridRetriever", "Reranker", "build_reranker",
     "cost_cny", "get_provider", "model_context_window", "price_for", "subject_identifier",
 ]

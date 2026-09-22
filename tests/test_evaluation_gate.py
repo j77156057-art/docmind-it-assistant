@@ -149,7 +149,8 @@ class EvaluationGateTests(unittest.TestCase):
             # Per-case detail is counters and ranks only: never answer or content text.
             for item in per_case.values():
                 self.assertLessEqual(
-                    set(item["detail"]), {"hit_count", "expected_rank", "heading_matched"},
+                    set(item["detail"]),
+                    {"hit_count", "expected_rank", "heading_matched", "faithfulness"},
                 )
             self.assertEqual(cases.json()["gate_mode"], "warn")
             self.assertEqual(cases.json()["thresholds"]["min_recall"], 0.8)

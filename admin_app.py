@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from backend import (
     OIDC_FLOW_COOKIE, OIDC_FLOW_SECONDS, SESSION_COOKIE,
     AppSettings, AuthenticationError, EmbeddingClient, EvaluationError, EvaluationService,
-    GovernanceError, HybridRetriever, OIDCAuthenticator, Principal, DocumentSourceStore,
+    GovernanceError, HybridRetriever, OIDCAuthenticator, Principal, DocumentSourceStore, build_reranker,
     ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase, build_embedding_client,
     configure_logging, log_event, normalize_classification, request_id_context,
 )
@@ -160,6 +160,7 @@ def create_admin_app(settings: AppSettings | None = None,
         max_bytes=config.document_max_bytes,
         chunk_max_chars=config.chunk_max_chars,
         chunk_overlap_chars=config.chunk_overlap_chars,
+        chunk_child_max_chars=config.chunk_child_max_chars,
         max_characters=config.document_max_characters,
         max_pages=config.document_max_pages,
         require_review=config.governance_mode == "review",
@@ -200,7 +201,10 @@ def create_admin_app(settings: AppSettings | None = None,
     evaluations = EvaluationService(
         settings=config,
         database=database,
-        retriever=HybridRetriever(database, embeddings, top_k=config.evaluation_top_k),
+        retriever=HybridRetriever(
+            database, embeddings, top_k=config.evaluation_top_k,
+            reranker=build_reranker(config), rerank_candidate_limit=config.rerank_top_n,
+        ),
         embeddings=embeddings,
     )
 

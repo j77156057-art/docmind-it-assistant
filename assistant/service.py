@@ -235,7 +235,8 @@ class ITQueryService:
                     "score": round(float(item.get("score") or 0), 6),
                 } for item in imported_hits[:3]]
                 answer_context = "\n\n".join(
-                    f"[{index}] 来源：{item['title']}\n章节：{item['heading']}\n{item['content'][:2500]}"
+                    f"[{index}] 来源：{item['title']}\n章节：{item['heading']}\n"
+                    f"{(item.get('parent_content') or item['content'])[:2500]}"
                     for index, item in enumerate(imported_hits[:3], 1)
                 )
             else:

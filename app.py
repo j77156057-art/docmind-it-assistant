@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from assistant import ITQueryService
 from backend import (
     OIDC_FLOW_COOKIE, OIDC_FLOW_SECONDS, SESSION_COOKIE,
-    AppSettings, AuthenticationError, EmbeddingClient, HybridRetriever, ModelGateway,
+    AppSettings, AuthenticationError, EmbeddingClient, HybridRetriever, ModelGateway, build_reranker,
     ModelGatewayError, ModelRouter, OIDCAuthenticator, Principal, QueryDatabase,
     build_embedding_client, configure_logging, log_event, request_id_context,
 )
@@ -67,7 +67,10 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         temperature=config.model_temperature,
     )
     embeddings = embedding_client or build_embedding_client(config)
-    retriever = HybridRetriever(database, embeddings, top_k=config.retrieval_top_k)
+    retriever = HybridRetriever(
+        database, embeddings, top_k=config.retrieval_top_k,
+        reranker=build_reranker(config), rerank_candidate_limit=config.rerank_top_n,
+    )
     service = ITQueryService(str(config.knowledge_path), database, models, gateway, retriever)
     rate_limiter = QueryRateLimiter(config.query_daily_quota)
     authenticator = OIDCAuthenticator(

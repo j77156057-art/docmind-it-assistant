@@ -14,12 +14,14 @@ questions may only reference documents that a viewer can see. Restricted documen
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from .database import QueryDatabase
 from .embeddings import EmbeddingClient
 from .logging_config import log_event, request_id_context
 from .retrieval import HybridRetriever
+from .text_index import lexical_terms
 
 
 LOGGER = logging.getLogger("docmind.it.evaluation")
@@ -39,6 +41,38 @@ def _ratio(numerator: int, denominator: int) -> float | None:
     if denominator <= 0:
         return None
     return round(numerator / denominator, 4)
+
+
+def _split_claims(text: str) -> list[str]:
+    """Split an answer into sentence-level claims on CJK/Latin sentence boundaries."""
+    parts = re.split(r"[。.!?！？\n]+", text or "")
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+def score_faithfulness(answer: str, context: str) -> float:
+    """RAGAS-style groundedness, computed deterministically and offline.
+
+    Each answer claim is checked for lexical support in the retrieved ``context``. A claim with no
+    checkable terms is counted as supported (it carries no verifiable content). Returns a value in
+    [0, 1]. This is a faithful, dependency-free proxy for an LLM-judge faithfulness scorer: a
+    later batch can swap in a cross-encoder/LLM judge by replacing only this function.
+    """
+    claims = _split_claims(answer)
+    if not claims:
+        return 1.0
+    context_terms = set(lexical_terms(context))
+    if not context_terms:
+        return 0.0
+    supported = 0
+    for claim in claims:
+        claim_terms = {term for term in lexical_terms(claim) if len(term) >= 2}
+        if not claim_terms:
+            supported += 1
+            continue
+        overlap = sum(1 for term in claim_terms if term in context_terms)
+        if overlap / len(claim_terms) >= 0.5:
+            supported += 1
+    return round(supported / len(claims), 4)
 
 
 class EvaluationService:
@@ -90,9 +124,10 @@ class EvaluationService:
         log_event(
             LOGGER, logging.INFO, "evaluation_run_completed",
             run_id=completed["run_id"], trigger=trigger, gate_mode=completed["gate_mode"],
-            gate_result=gate_result, total=metrics["total_cases"],
-            recall=metrics["recall_at_k"], citation=metrics["citation_accuracy"],
-        )
+                gate_result=gate_result, total=metrics["total_cases"],
+                recall=metrics["recall_at_k"], citation=metrics["citation_accuracy"],
+                faithfulness=metrics["faithfulness"],
+            )
         return completed
 
     def latest_gate(self, document_version_id: int) -> dict | None:
@@ -152,6 +187,11 @@ class EvaluationService:
             break
         detail["expected_rank"] = rank
         detail["heading_matched"] = heading_matched
+        context = "\n\n".join(
+            (hit.get("parent_content") or hit["content"]) for hit in hits[: self.top_k]
+        )
+        answer = hits[0]["content"] if hits else ""
+        detail["faithfulness"] = score_faithfulness(answer, context) if hits else None
         return {
             "case_id": case["case_id"],
             "retrieved": rank is not None,
@@ -178,6 +218,12 @@ class EvaluationService:
             1 for item in results
             if (item["refusal_ok"] if item["refusal_ok"] is not None else item["citation_ok"])
         )
+        faithful = [
+            item["detail"].get("faithfulness") for item in results
+            if item["detail"].get("faithfulness") is not None
+        ]
+        faithfulness = round(sum(faithful) / len(faithful), 4) if faithful else None
+        faithfulness_coverage = _ratio(len(faithful), len(results))
         return {
             "total_cases": len(results),
             "passed_cases": passed,
@@ -185,6 +231,8 @@ class EvaluationService:
             "recall_at_k": _ratio(retrieved, len(expected)),
             "citation_accuracy": _ratio(cited, len(expected)),
             "refusal_accuracy": _ratio(correct_refusals, len(refusals)),
+            "faithfulness": faithfulness,
+            "faithfulness_coverage": faithfulness_coverage,
         }
 
     def _decide(self, *, metrics: dict, baseline: dict | None) -> tuple[str | None, str]:
@@ -208,6 +256,12 @@ class EvaluationService:
                 f"引用命中率 {citation:.3f} < "
                 f"{self.settings.evaluation_min_citation_accuracy:.3f}"
             )
+        if self.settings.evaluation_faithfulness_enabled:
+            faithfulness = metrics.get("faithfulness")
+            if faithfulness is not None and faithfulness < self.settings.evaluation_min_faithfulness:
+                problems.append(
+                    f"忠实度 {faithfulness:.3f} < {self.settings.evaluation_min_faithfulness:.3f}"
+                )
         if baseline:
             allowed = self.settings.evaluation_max_regression
             base_recall = baseline.get("recall_at_k")

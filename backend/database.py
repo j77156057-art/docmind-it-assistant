@@ -449,6 +449,7 @@ class QueryDatabase:
                     heading=chunk.heading[:512],
                     page_number=chunk.page_number,
                     content=self._field_encryptor.encrypt(chunk.content),
+                    parent_content=self._field_encryptor.encrypt(chunk.parent_content or ""),
                     search_text=lexical_text(f"{chunk.heading} {chunk.content}"),
                     embedding=list(vector),
                     created_at=now,
@@ -485,6 +486,7 @@ class QueryDatabase:
                     heading=str(row.get("heading") or "")[:512],
                     page_number=row.get("page_number"),
                     content=self._field_encryptor.encrypt(str(row.get("content") or "")),
+                    parent_content=self._field_encryptor.encrypt(str(row.get("parent_content") or "")),
                     search_text=lexical_text(f"{row.get('heading') or ''} {row.get('content') or ''}"),
                     embedding=list(row["embedding"]),
                     created_at=now,
@@ -1608,7 +1610,7 @@ class QueryDatabase:
             departments = self._resolve_principal_departments(subject_id)
             statement = text("""
                 SELECT c.id, d.title, d.source_key, v.version, c.ordinal, c.heading, c.page_number,
-                       c.content, ts_rank_cd(
+                       c.content, c.parent_content, ts_rank_cd(
                            c.search_vector, websearch_to_tsquery('simple', :query)
                        ) AS score
                 FROM document_chunks c
@@ -1694,7 +1696,7 @@ class QueryDatabase:
                 SELECT id FROM lexical UNION SELECT id FROM semantic
             )
             SELECT e.id, e.title, e.source_key, e.version, e.ordinal, e.heading, e.page_number,
-                   e.content,
+                   e.content, e.parent_content,
                    l.lexical_rank, s.semantic_rank, s.similarity,
                    COALESCE(1.0 / (60 + l.lexical_rank), 0) +
                    COALESCE(1.0 / (60 + s.semantic_rank), 0) AS score
@@ -1722,6 +1724,7 @@ class QueryDatabase:
         results = [dict(row) for row in rows]
         for result in results:
             result["content"] = self._field_encryptor.decrypt(result["content"])
+            result["parent_content"] = self._field_encryptor.decrypt(result.get("parent_content") or "")
         return results
 
     def _portable_hybrid_search(self, query: str, embedding: list[float], limit: int,
@@ -1800,6 +1803,7 @@ class QueryDatabase:
                 "version": version,
                 "ordinal": chunk.ordinal, "heading": chunk.heading,
                 "page_number": chunk.page_number, "content": self._field_encryptor.decrypt(chunk.content),
+                "parent_content": self._field_encryptor.decrypt(chunk.parent_content),
                 "lexical_rank": lexical_rank.get(chunk.id),
                 "semantic_rank": semantic_rank[chunk.id],
                 "similarity": similarity, "score": score,

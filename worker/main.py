@@ -37,6 +37,7 @@ def build_worker(settings: AppSettings) -> tuple[IngestionWorker, QueryDatabase]
         max_bytes=settings.document_max_bytes,
         chunk_max_chars=settings.chunk_max_chars,
         chunk_overlap_chars=settings.chunk_overlap_chars,
+        chunk_child_max_chars=settings.chunk_child_max_chars,
         max_characters=settings.document_max_characters,
         max_pages=settings.document_max_pages,
         require_review=settings.governance_mode == "review",
