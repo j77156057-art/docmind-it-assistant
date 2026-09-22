@@ -5,7 +5,7 @@
 ## 已完成
 
 - 查询服务与管理服务拥有独立入口和能力边界。
-- PostgreSQL/SQLite Repository 与 17 个可升降级 Alembic 迁移（`20260920_0001` 至 `20260922_0017`）。
+- PostgreSQL/SQLite Repository 与 20 个可升降级 Alembic 迁移（`20260920_0001` 至 `20260923_0020`，其中 `0018` 严格引用、`0019` 分块标题标记、`0020` 知识域由后续架构决策落地）。
 - Markdown、TXT、PDF、DOCX 版本化导入和全文 + 向量混合检索。
 - OIDC Bearer Token 校验、`viewer/auditor/admin` RBAC 和匿名化主体隔离。
 - 用户、组、角色级文档 ACL，并在召回前执行过滤。
