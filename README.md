@@ -120,7 +120,7 @@ IT_OIDC_CLIENT_ID=docmind-portal
 IT_OIDC_REDIRECT_URI=https://docmind.example.com/api/auth/oidc/callback
 IT_OIDC_SCOPES=openid profile email
 IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
-# query.question 字段级加密密钥（Fernet）。生产必须配置；可为原始 32 字节 Fernet 密钥或任意口令（SHA-256 派生）。
+# query.question 与 document_chunks.content（正文）字段级加密密钥（Fernet）。生产必须配置；可为原始 32 字节 Fernet 密钥或任意口令（SHA-256 派生）。
 IT_QUERY_FIELD_KEY=<至少 16 字符的随机值或 Fernet 密钥>
 ```
 
@@ -239,7 +239,7 @@ IT_INGESTION_HEARTBEAT_SECONDS=30
 IT_INGESTION_BACKOFF_MAX_SECONDS=1800
 IT_SLOW_REQUEST_MS=1000
 IT_SLOW_DB_MS=200
-# query.question 字段级加密密钥（Fernet）。生产必须配置；未配置则使用固定开发密钥并告警。
+# query.question 与 document_chunks.content（正文）字段级加密密钥（Fernet）。生产必须配置；未配置则使用固定开发密钥并告警。
 IT_QUERY_FIELD_KEY=
 # 每用户每日查询配额（0 关闭）。超限返回 HTTP 429 + Retry-After 与 X-RateLimit-* 头。
 IT_QUERY_DAILY_QUOTA=1000
@@ -373,7 +373,7 @@ IT_EVAL_TOP_K=5
 
 云端模式可直接在“系统状态 → 模型配置”填写供应商、模型和 API Key。系统会先发起一次真实的短请求验证连接，再把密钥用 `IT_AUTH_SUBJECT_SALT` 派生的密钥加密保存；页面和接口只返回“已配置”，不会回显明文。切勿随意更换 `IT_AUTH_SUBJECT_SALT`，否则已保存密钥将无法解密；生产环境更推荐将密钥放入部署平台的 Secret Manager 或环境变量。
 
-用户提问（`query.question`）按 `IT_QUERY_FIELD_KEY` 做字段级 AES 加密落库，读取时解密，密钥缺失时本地/测试使用固定开发密钥并告警。加密值带 `enc:v1:` 前缀，未带前缀的旧明文记录仍可正常读出（向后兼容，无需迁移）。`IT_QUERY_FIELD_KEY` 与 `IT_AUTH_SUBJECT_SALT` 一样属于密钥，生产环境必须配置且建议存入 Secret Manager；轮换密钥时需对存量记录做一次重加密。
+用户提问（`query.question`）与文档正文（`document_chunks.content`）按 `IT_QUERY_FIELD_KEY` 做字段级 AES 加密落库，读取时解密，密钥缺失时本地/测试使用固定开发密钥并告警。加密值带 `enc:v1:` 前缀，未带前缀的旧明文记录仍可正常读出（向后兼容，无需迁移）。文档正文 `search_text`（词法检索）与 `embedding`（语义向量）保持明文/原样；存量明文正文由迁移 `20260922_0014` 就地回填加密（幂等、可重复运行），旧明文记录读取时原样返回。`IT_QUERY_FIELD_KEY` 与 `IT_AUTH_SUBJECT_SALT` 一样属于密钥，生产环境必须配置且建议存入 Secret Manager；轮换密钥时需对存量记录做一次重加密。
 
 每个用户每日查询次数受 `IT_QUERY_DAILY_QUOTA`（默认 1000）限制，按 UTC 自然日重置；超限返回 `HTTP 429` 并带 `Retry-After`（距次日 UTC 零点秒数）与 `X-RateLimit-Limit`/`X-RateLimit-Remaining` 头。`development` 认证模式与匿名/空主体跳过限流（本地离线演示不受影响）。计数进程内维护、重启清零，适用于单实例部署。
 
