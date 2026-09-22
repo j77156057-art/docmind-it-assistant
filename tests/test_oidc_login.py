@@ -466,6 +466,7 @@ class OidcSettingsTests(unittest.TestCase):
             "oidc_issuer": ISSUER,
             "oidc_audience": API_AUDIENCE,
             "auth_subject_salt": "a-production-subject-salt-at-least-32-characters",
+            "query_field_key": "a-production-field-key-at-least-16-characters",
             "oidc_client_id": CLIENT_ID,
             "oidc_redirect_uri": REDIRECT_URI,
         }

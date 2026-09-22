@@ -113,6 +113,7 @@ def create_admin_app(settings: AppSettings | None = None,
         connect_timeout=config.database_connect_timeout,
         slow_db_ms=config.slow_db_ms,
         secret_key=config.auth_subject_salt.get_secret_value(),
+        query_field_key=config.query_field_key.get_secret_value(),
     )
     embeddings = embedding_client or build_embedding_client(config)
     ingestion = DocumentIngestionService(

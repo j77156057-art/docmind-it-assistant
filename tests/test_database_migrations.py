@@ -64,6 +64,7 @@ class DatabaseMigrationTests(unittest.TestCase):
             oidc_client_id="docmind-portal",
             oidc_redirect_uri="https://docmind.example.com/api/auth/oidc/callback",
             auth_subject_salt="a-production-subject-salt-at-least-32-characters",
+            query_field_key="a-production-field-key-at-least-16-characters",
         )
         self.assertNotIn("secret", repr(settings))
         self.assertNotIn("database_url", settings.public())

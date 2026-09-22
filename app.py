@@ -43,6 +43,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
         connect_timeout=config.database_connect_timeout,
         slow_db_ms=config.slow_db_ms,
         secret_key=config.auth_subject_salt.get_secret_value(),
+        query_field_key=config.query_field_key.get_secret_value(),
     )
     models = ModelRouter.from_settings(
         config, runtime_loader=database.runtime_model_config,

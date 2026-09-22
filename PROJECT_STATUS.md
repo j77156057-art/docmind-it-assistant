@@ -44,6 +44,7 @@
 - 日志和审计不保存问题正文、回答正文、Token 原文或供应商错误正文。
 - 生成文件固定在专用目录，并拒绝路径穿越和电子表格公式注入。
 - 日志字段是白名单（标识符、枚举、计数、布尔），问题正文、回答正文与文档内容无法通过 `log_event` 的额外字段进入日志；白名单有专门测试固定。
+- 字段级加密（A-4）：`query.question` 按 `IT_QUERY_FIELD_KEY` 用 Fernet（AES-128-CBC + HMAC-SHA256）加密落库，写入前加密、读出按需解密；未带 `enc:v1:` 前缀的旧明文记录仍可正常读出（向后兼容，无需迁移）。密钥缺失时本地/测试用固定开发密钥并告警，生产环境 `AppSettings` 校验强制要求配置 `IT_QUERY_FIELD_KEY`。`EvaluationCaseRecord.question`（黄金评测用例，知识团队所有）明确不加密。
 
 ## 验证基线
 
@@ -59,14 +60,13 @@ node --check web/admin.js
 先设置 `IT_DATABASE_URL=sqlite:///data/queries.db`，或直接用 `.\scripts\dev.ps1 start`
 （它会覆盖为项目内 SQLite 并自动执行迁移，同时启动查询、管理与 Worker 三个进程）。
 
-当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验；`tests/test_oidc_login.py` 用 stub IdP（真实 RSA 密钥 + `httpx.MockTransport`）覆盖 PKCE(S256) 挑战、state/nonce 绑定、HS256 算法混淆拒绝、错误签名与端点发现缓存；`tests/test_audit_export.py` 覆盖 CSV/JSON 导出、时间/动作筛选、viewer 无 `audit.read` 被 403、非法格式 400 与导出动作自审计留痕；`tests/test_ingestion_backoff.py` 覆盖行内 `next_attempt_at` 指数退避与退避上限，`tests/test_metrics.py` 覆盖 `audit.read` 读取指标快照、viewer 被 403 与注册表线程安全，`tests/test_stress_concurrency.py` 覆盖并发请求全部成功且指标精确计数。
+当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验；`tests/test_oidc_login.py` 用 stub IdP（真实 RSA 密钥 + `httpx.MockTransport`）覆盖 PKCE(S256) 挑战、state/nonce 绑定、HS256 算法混淆拒绝、错误签名与端点发现缓存；`tests/test_audit_export.py` 覆盖 CSV/JSON 导出、时间/动作筛选、viewer 无 `audit.read` 被 403、非法格式 400 与导出动作自审计留痕；`tests/test_ingestion_backoff.py` 覆盖行内 `next_attempt_at` 指数退避与退避上限，`tests/test_metrics.py` 覆盖 `audit.read` 读取指标快照、viewer 被 403 与注册表线程安全，`tests/test_stress_concurrency.py` 覆盖并发请求全部成功且指标精确计数，`tests/test_field_encryption.py` 覆盖 `query.question` 字段级加解密、旧明文回退与生产必配 `IT_QUERY_FIELD_KEY` 校验。
 
 ## 后续工作
 
-1. **已收口**：`reindex`/`withdraw` 任务类型与可重试失败持久化退避（`next_attempt_at`，迁移 `20260922_0011`）；进程内可观测性（`/api/admin/metrics` + 慢请求/慢查询日志）与离线并发压测（`scripts/bench_concurrency.py`）。
-2. `query.question` 字段级加密（AES，写入前加密、读出按需解密，迁移重写存量明文；与"正文脱敏"硬缺口同源）。
-3. 文档保留期 + 保留策略（自动清理任务，默认 365 天，待实现）。
-4. `query` 接口限流/配额（每用户每日 1000 次，超阈返回 429 + Retry-After；待实现）。
+1. **已收口**：`reindex`/`withdraw` 任务类型与可重试失败持久化退避（`next_attempt_at`，迁移 `20260922_0011`）；进程内可观测性（`/api/admin/metrics` + 慢请求/慢查询日志）与离线并发压测（`scripts/bench_concurrency.py`）；`query.question` 字段级加密（Fernet，密钥 `IT_QUERY_FIELD_KEY`，`tests/test_field_encryption.py` 覆盖加解密、旧明文回退与生产必配校验）。
+2. 文档保留期 + 保留策略（自动清理任务，默认 365 天，待实现）。
+3. `query` 接口限流/配额（每用户每日 1000 次，超阈返回 429 + Retry-After；待实现）。
 5. 引用持久化、用户反馈、知识缺口统计（采购硬缺口，零命中，待建表）。
 6. 用户/用户组实体表与部门（域 B 组织模型，ACL 的 group/role 当前只是 OIDC claim 字符串）。
 7. 检索质量数据集运营（黄金题评审流程）、检索重排与知识域模型（域 B）。

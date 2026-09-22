@@ -26,6 +26,7 @@ from .db_models import (
     RuntimeModelConfigRecord, RuntimeProviderCredentialRecord,
 )
 from cryptography.fernet import Fernet, InvalidToken
+from .crypto import FieldEncryptor
 from .auth import (
     CLASSIFICATION_RANK, CONFIDENTIAL, INTERNAL, OPEN_CLASSIFICATIONS, is_open_classification,
     normalize_classification,
@@ -58,7 +59,7 @@ class QueryDatabase:
 
     def __init__(self, url_or_path: str, *, pool_size: int = 5, max_overflow: int = 10,
                  pool_timeout: int = 30, connect_timeout: int = 5, secret_key: str = "",
-                 slow_db_ms: int = 200):
+                 slow_db_ms: int = 200, query_field_key: str = ""):
         self.url = _database_url(str(url_or_path))
         self._slow_db_ms = max(0, int(slow_db_ms))
         url = make_url(self.url)
@@ -80,6 +81,7 @@ class QueryDatabase:
         self._sessions = sessionmaker(bind=self.engine, expire_on_commit=False)
         digest = hashlib.sha256((secret_key or "development-only").encode("utf-8")).digest()
         self._credential_cipher = Fernet(base64.urlsafe_b64encode(digest))
+        self._field_encryptor = FieldEncryptor(query_field_key)
         self._attach_slow_query_listener()
 
     @property
@@ -146,7 +148,7 @@ class QueryDatabase:
         row = QueryRecord(
             session_id=str(session_id or "default")[:128],
             owner_subject_id=owner_subject_id[:64],
-            question=question,
+            question=self._field_encryptor.encrypt(question),
             evidence=evidence,
             model_route=model_route,
         )
@@ -177,7 +179,7 @@ class QueryDatabase:
         return [
             {
                 "id": row.id,
-                "question": row.question,
+                "question": self._field_encryptor.decrypt(row.question),
                 "evidence": row.evidence,
                 "model_route": row.model_route,
                 "created_at": row.created_at.isoformat(),

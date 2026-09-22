@@ -27,6 +27,7 @@ def build_worker(settings: AppSettings) -> tuple[IngestionWorker, QueryDatabase]
         max_overflow=settings.database_max_overflow,
         pool_timeout=settings.database_pool_timeout,
         connect_timeout=settings.database_connect_timeout,
+        query_field_key=settings.query_field_key.get_secret_value(),
     )
     ingestion = DocumentIngestionService(
         database,

@@ -30,6 +30,7 @@ def main() -> int:
         max_overflow=settings.database_max_overflow,
         pool_timeout=settings.database_pool_timeout,
         connect_timeout=settings.database_connect_timeout,
+        query_field_key=settings.query_field_key.get_secret_value(),
     )
     try:
         if args.command == "list":
