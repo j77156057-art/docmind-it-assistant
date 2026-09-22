@@ -13,6 +13,10 @@ class ProviderSpec:
     default_model: str
     cloud: bool
     context_window: int
+    # Max inputs per embedding request. DashScope (qwen) hard-caps at 10; OpenAI and
+    # most OpenAI-compatible servers allow far more. Clamp here so a single oversized
+    # document never trips an HTTP 400 from the provider.
+    max_batch_size: int = 128
 
     def public(self, model: str = "") -> dict:
         data = asdict(self)
@@ -24,7 +28,7 @@ PROVIDERS = {
     "builtin": ProviderSpec("builtin", "内置知识检索", "", "", "deterministic", False, 0),
     "qwen": ProviderSpec(
         "qwen", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "DASHSCOPE_API_KEY", "qwen-plus", True, 131072,
+        "DASHSCOPE_API_KEY", "qwen-plus", True, 131072, 10,
     ),
     "deepseek": ProviderSpec(
         "deepseek", "DeepSeek", "https://api.deepseek.com/v1",

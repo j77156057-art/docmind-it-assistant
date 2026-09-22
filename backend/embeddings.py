@@ -145,6 +145,10 @@ def build_embedding_client(settings, *, transport: httpx.BaseTransport | None = 
         default_url = settings.custom_base_url
     else:
         default_url = provider.base_url
+    # Clamp the batch size to what the provider actually accepts. DashScope (qwen) hard-caps
+    # at 10 inputs per request; exceeding it returns HTTP 400 (InvalidParameter). The global
+    # default is 16, which is fine for OpenAI-style servers but breaks qwen on any multi-chunk doc.
+    effective_batch_size = min(settings.embedding_batch_size, getattr(provider, "max_batch_size", 128))
     return EmbeddingClient(
         mode=settings.embedding_mode,
         provider=provider.key if settings.embedding_mode == "provider" else "builtin",
@@ -153,7 +157,7 @@ def build_embedding_client(settings, *, transport: httpx.BaseTransport | None = 
         api_key=settings.credential_value(provider.api_key_env),
         dimension=settings.embedding_dimension,
         timeout_seconds=settings.embedding_timeout_seconds,
-        batch_size=settings.embedding_batch_size,
+        batch_size=effective_batch_size,
         transport=transport,
     )
 def _token_value(value) -> int | None:

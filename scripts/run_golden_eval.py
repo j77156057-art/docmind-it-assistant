@@ -187,11 +187,16 @@ def run_repo(repo: dict, embedding_mode: str, embedding_provider: str) -> dict:
 
 def main() -> int:
     arg_mode = None
+    out_path = None
     for a in sys.argv[1:]:
         if a.startswith("--embedding"):
             arg_mode = a.split("=", 1)[1] if "=" in a else None
             if arg_mode is None and len(sys.argv) > sys.argv.index(a) + 1:
                 arg_mode = sys.argv[sys.argv.index(a) + 1]
+        elif a.startswith("--out"):
+            out_path = a.split("=", 1)[1] if "=" in a else None
+            if out_path is None and len(sys.argv) > sys.argv.index(a) + 1:
+                out_path = sys.argv[sys.argv.index(a) + 1]
     embedding_mode, embedding_provider, why = detect_embedding_mode(arg_mode)
     print(f"[embedding] mode={embedding_mode} provider={embedding_provider} ({why})")
     if embedding_mode == "provider" and not os.environ.get("DASHSCOPE_API_KEY", "").strip():
@@ -223,7 +228,7 @@ def main() -> int:
                   f"rank={str(r['rank']):5} cite={str(r['citation_ok']):5} "
                   f"ref={str(r['refusal_ok']):5} faith={r['faithfulness']}")
 
-    out = HERE.parent / "tmp_golden_report.json"
+    out = Path(out_path) if out_path else HERE.parent / "tmp_golden_report.json"
     out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nReport written to {out}")
     return 0
