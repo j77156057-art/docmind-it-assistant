@@ -53,6 +53,7 @@
 ```powershell
 .venv\Scripts\python -B -m pytest -q -rs -p no:cacheprovider tests
 .venv\Scripts\python -B scripts/check_suite_completeness.py
+.venv\Scripts\python -B scripts/check_run_log.py pytest-output.log
 .venv\Scripts\python -m alembic upgrade head; .venv\Scripts\python -m alembic check
 .venv\Scripts\python -m worker --once
 node --check web/admin.js
@@ -79,8 +80,12 @@ node --check web/admin.js
 （它会覆盖为项目内 SQLite 并自动执行迁移，同时启动查询、管理与 Worker 三个进程）。
 
 `scripts/_*.py`（如 `_diag_citation.py`、`_diff_golden.py`、`_run_tests.py`）是内部诊断脚本，
-**不是生产入口**，不参与部署；`scripts/check_suite_completeness.py` 是测试完整性护栏，
-已挂进 CI 的「Check test suite completeness」步骤。
+**不是生产入口**，不参与部署；`scripts/check_suite_completeness.py` 与 `scripts/check_run_log.py` 是一对护栏，分工互补：
+**collect-only 断言管「该跑的没跑」**（任何 `tests/test_*.py` 贡献 0 个用例即失败），
+**日志扫描管「崩了还发绿」**（在测试输出日志里搜 `fatal exception` / `access violation` /
+`Segmentation fault` / `Fatal Python error` / `Aborted (core dumped)`，命中即失败；日志缺失或为空同样判失败）。
+后者源于一次实测：全量 pytest 曾打出 `Windows fatal exception: access violation`（栈在 SQLite DDL），
+却仍报 `223 passed` 且 exit 0——所以「门禁发绿」不等于「跑得干净」。两者均已挂进 CI。
 
 当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验；`tests/test_oidc_login.py` 用 stub IdP（真实 RSA 密钥 + `httpx.MockTransport`）覆盖 PKCE(S256) 挑战、state/nonce 绑定、HS256 算法混淆拒绝、错误签名与端点发现缓存；`tests/test_audit_export.py` 覆盖 CSV/JSON 导出、时间/动作筛选、viewer 无 `audit.read` 被 403、非法格式 400 与导出动作自审计留痕；`tests/test_ingestion_backoff.py` 覆盖行内 `next_attempt_at` 指数退避与退避上限，`tests/test_metrics.py` 覆盖 `audit.read` 读取指标快照、viewer 被 403 与注册表线程安全，`tests/test_stress_concurrency.py` 只读地覆盖「8 线程 × 16 次并发 `GET /api/runtime/model` 全部 200 且指标计数不漏」（不构成并发能力验证，见下文），`tests/test_field_encryption.py` 覆盖 `query.question` 字段级加解密、旧明文回退与生产必配 `IT_QUERY_FIELD_KEY` 校验；`tests/test_retention.py` 覆盖文档保留期软标记/硬删/级联/宽限期与端点鉴权+自审计。
 

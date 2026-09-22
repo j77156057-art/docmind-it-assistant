@@ -8,6 +8,6 @@ tmp/
 # only matches a *directory*; it never matched root-level `tmp_xxx` files, which is why the
 # working tree kept accumulating untracked noise.
 tmp_*
+TMPQA_*
 scripts/tmp_*
 .workbuddy/
-

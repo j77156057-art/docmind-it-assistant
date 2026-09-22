@@ -65,7 +65,15 @@ jobs:
         # modules, and unittest discover only collects the former — leaving 24 tests (field
         # encryption, rate limiting, reranking) silently unexecuted. `-rs` prints skip reasons
         # so a test that silently opts out is visible in the log instead of being invisible.
-        run: python -B -m pytest -q -rs -p no:cacheprovider tests
+        #
+        # `set -o pipefail` is mandatory: without it the exit code of the pipeline is `tee`'s,
+        # which would let a failing pytest run report green. The log is then scanned for
+        # process-level crash markers, because a run was once observed emitting
+        # "Windows fatal exception: access violation" while still exiting 0.
+        run: |
+          set -o pipefail
+          python -B -m pytest -q -rs -p no:cacheprovider tests 2>&1 | tee pytest-output.log
+          python -B scripts/check_run_log.py pytest-output.log
       - name: Check Python and JavaScript syntax
         run: |
           python -m compileall -q app.py admin_app.py assistant backend ingestion migrations tests worker
