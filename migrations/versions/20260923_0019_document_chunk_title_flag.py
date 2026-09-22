@@ -28,7 +28,7 @@ def upgrade() -> None:
     """Add the is_title_block column to document_chunks."""
     with op.batch_alter_table("document_chunks") as batch_op:
         batch_op.add_column(
-            sa.Column("is_title_block", sa.Boolean(nullable=False, server_default=sa.false())),
+            sa.Column("is_title_block", sa.Boolean(), nullable=False, server_default=sa.false()),
         )
 
 
