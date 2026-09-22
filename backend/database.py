@@ -1224,6 +1224,7 @@ class QueryDatabase:
             "failed_cases": row.failed_cases,
             "recall_at_k": ratio(row.recall_at_k),
             "citation_accuracy": ratio(row.citation_accuracy),
+            "citation_accuracy_strict": ratio(row.citation_accuracy_strict),
             "refusal_accuracy": ratio(row.refusal_accuracy),
             "faithfulness": ratio(row.faithfulness),
             "faithfulness_coverage": ratio(row.faithfulness_coverage),
@@ -1338,6 +1339,7 @@ class QueryDatabase:
             row.failed_cases = int(metrics.get("failed_cases") or 0)
             row.recall_at_k = metrics.get("recall_at_k")
             row.citation_accuracy = metrics.get("citation_accuracy")
+            row.citation_accuracy_strict = metrics.get("citation_accuracy_strict")
             row.refusal_accuracy = metrics.get("refusal_accuracy")
             row.faithfulness = metrics.get("faithfulness")
             row.faithfulness_coverage = metrics.get("faithfulness_coverage")

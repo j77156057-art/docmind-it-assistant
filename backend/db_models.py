@@ -337,6 +337,9 @@ class EvaluationRunRecord(Base):
     failed_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     recall_at_k: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     citation_accuracy: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    citation_accuracy_strict: Mapped[Decimal | None] = mapped_column(
+        Numeric(6, 4), nullable=True
+    )
     refusal_accuracy: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     faithfulness: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     faithfulness_coverage: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)

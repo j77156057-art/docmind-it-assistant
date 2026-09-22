@@ -1,7 +1,8 @@
 """Run the DocMind retrieval golden set against the real admin HTTP stack.
 
 Reads ``golden/retrieval_golden_set.json``, and for each repo:
-  1. builds a throwaway SQLite project,
+  1. builds a throwaway project (SQLite by default, or a disposable PostgreSQL database when
+     ``IT_TEST_POSTGRES_URL`` is set),
   2. indexes the repo's markdown docs through the real import endpoint
      (unique ``source_key`` per doc; hash embeddings + LexicalReranker, offline),
   3. seeds the repo's golden cases into ``evaluation_cases``,
@@ -10,11 +11,15 @@ Reads ``golden/retrieval_golden_set.json``, and for each repo:
 This exercises the post-change retrieval pipeline end to end:
   * HybridRetriever with the rerank layer (LexicalReranker)
   * parent-child chunking (chunk_child_max_chars → parent_content)
-  * RAGAS-style faithfulness scoring on retrieved context
+  * RAGAS-style faithfulness scoring on the retrieved (or generated) answer
 
-Run:
+Run against SQLite (offline, no network required):
     python scripts/run_golden_eval.py
-No network required (hash embeddings, lexical rerank).
+
+Run against the production PostgreSQL retrieval path (pgvector + tsvector SQL RRF):
+    IT_TEST_POSTGRES_URL=postgresql+psycopg://docmind:change-me@127.0.0.1:5432/docmind_it \\
+        python scripts/run_golden_eval.py
+The script creates and drops its own disposable database, so the server role needs CREATEDB.
 """
 from __future__ import annotations
 
@@ -39,6 +44,47 @@ HEADERS = {
 }
 
 
+# --- PostgreSQL baseline support -----------------------------------------------------------
+# When IT_TEST_POSTGRES_URL is set the run provisions a disposable database on that server and runs
+# the golden set through the *production* retrieval path (pgvector + tsvector SQL RRF), instead of
+# the SQLite portable full-table-scan path that `unittest discover` exercises. The pattern mirrors
+# tests/test_indexing_graph_postgres.py: create+destroy a throwaway database, migrate it to head.
+def _pg_server_url(database_url: str, database: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+    parts = urlsplit(database_url)
+    return urlunsplit((parts.scheme, parts.netloc, f"/{database}", "", ""))
+
+
+def _pg_connect(database_url: str, *, autocommit: bool = True):
+    from psycopg import connect as psycopg_connect
+    dsn = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    return psycopg_connect(dsn, autocommit=autocommit)
+
+
+def make_pg_database(postgres_url: str) -> tuple[str, str]:
+    """Create a disposable database on the server, migrate to head; return (url, name)."""
+    from alembic import command
+    from alembic.config import Config
+    db_name = f"docmind_golden_{os.getpid()}_{os.urandom(3).hex()}"
+    db_url = _pg_server_url(postgres_url, db_name)
+    with _pg_connect(_pg_server_url(postgres_url, "postgres")) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f'CREATE DATABASE "{db_name}"')
+    cfg = Config(str(HERE.parent / "alembic.ini"))
+    cfg.attributes["database_url"] = db_url
+    command.upgrade(cfg, "head")
+    return db_url, db_name
+
+
+def drop_pg_database(postgres_url: str, db_name: str) -> None:
+    with _pg_connect(_pg_server_url(postgres_url, "postgres")) as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+            except Exception:  # noqa: BLE001 - older servers lack WITH (FORCE)
+                cur.execute(f'DROP DATABASE IF EXISTS "{db_name}"')
+
+
 def detect_embedding_mode(arg_mode: str | None) -> tuple[str, str, str | None]:
     """Resolve the embedding mode for the run.
 
@@ -58,7 +104,8 @@ def detect_embedding_mode(arg_mode: str | None) -> tuple[str, str, str | None]:
     return "hash", "builtin", "auto: no DASHSCOPE_API_KEY -> offline hash"
 
 
-def build_settings(project: Path, embedding_mode: str, embedding_provider: str) -> AppSettings:
+def build_settings(project: Path, embedding_mode: str, embedding_provider: str,
+                   database_url: str | None = None) -> AppSettings:
     knowledge = project / "knowledge.md"
     knowledge.write_text("# IT\n", encoding="utf-8")
     web = project / "web" / "index.html"
@@ -75,7 +122,10 @@ def build_settings(project: Path, embedding_mode: str, embedding_provider: str) 
     return AppSettings(
         project_root=project,
         environment="test",
-        database_url=f"sqlite:///{(project / 'queries.db').as_posix()}",
+        # Default to a throwaway SQLite project. When IT_TEST_POSTGRES_URL is set the caller passes
+        # a disposable PostgreSQL database URL so the run exercises the production pgvector + tsvector
+        # retrieval path (not the SQLite portable full-table-scan path used by `unittest discover`).
+        database_url=database_url or f"sqlite:///{(project / 'queries.db').as_posix()}",
         knowledge_path=knowledge,
         web_index_path=web,
         artifact_output_path=project / "artifacts",
@@ -102,10 +152,12 @@ def build_settings(project: Path, embedding_mode: str, embedding_provider: str) 
     )
 
 
-def run_repo(repo: dict, embedding_mode: str, embedding_provider: str) -> dict:
+def run_repo(repo: dict, embedding_mode: str, embedding_provider: str,
+             database_url: str | None = None) -> dict:
     with tempfile.TemporaryDirectory() as root:
         project = Path(root)
-        settings = build_settings(project, embedding_mode, embedding_provider)
+        settings = build_settings(project, embedding_mode, embedding_provider,
+                                  database_url=database_url)
         application = create_admin_app(settings)
         with TestClient(application) as client:
             # 1) index documents
@@ -163,6 +215,7 @@ def run_repo(repo: dict, embedding_mode: str, embedding_provider: str) -> dict:
             "retrieved": it.get("retrieved"),
             "rank": it.get("matched_rank"),
             "citation_ok": it.get("citation_ok"),
+            "citation_ok_strict": (it.get("detail") or {}).get("citation_ok_strict"),
             "refusal_ok": it.get("refusal_ok"),
             "faithfulness": d.get("faithfulness"),
         })
@@ -178,6 +231,7 @@ def run_repo(repo: dict, embedding_mode: str, embedding_provider: str) -> dict:
         "failed_cases": m["failed_cases"],
         "recall_at_k": m["recall_at_k"],
         "citation_accuracy": m["citation_accuracy"],
+        "citation_accuracy_strict": m["citation_accuracy_strict"],
         "refusal_accuracy": m["refusal_accuracy"],
         "faithfulness": m["faithfulness"],
         "faithfulness_coverage": m["faithfulness_coverage"],
@@ -203,30 +257,42 @@ def main() -> int:
         print("[embedding] WARNING: provider mode requested but DASHSCOPE_API_KEY is empty -> "
               "import will fail with embedding_api_key_missing. Set the env var and retry.")
 
+    postgres_url = os.environ.get("IT_TEST_POSTGRES_URL", "").strip()
+    pg_db_url = pg_db_name = None
+    if postgres_url:
+        print(f"[db] provisioning disposable PostgreSQL database from {postgres_url}")
+        pg_db_url, pg_db_name = make_pg_database(postgres_url)
+
     data = json.loads(GOLDEN.read_text(encoding="utf-8"))
     print(f"Loaded golden set: {len(data['repos'])} repos")
     results = []
-    for repo in data["repos"]:
-        print(f"\n===== REPO: {repo['name']} ({len(repo['documents'])} docs, "
-              f"{len(repo['cases'])} cases) =====")
-        report = run_repo(repo, embedding_mode, embedding_provider)
-        results.append(report)
-        if "error" in report:
-            print(f"  ERROR: {report['error']}")
-            continue
-        print(f"  status           : {report['status']}")
-        print(f"  gate_result      : {report['gate_result']}  ({report['gate_reason']})")
-        print(f"  total/passed     : {report['total_cases']}/{report['passed_cases']} "
-              f"(failed {report['failed_cases']})")
-        print(f"  recall@5         : {report['recall_at_k']}")
-        print(f"  citation_acc     : {report['citation_accuracy']}")
-        print(f"  refusal_acc      : {report['refusal_accuracy']}")
-        print(f"  faithfulness     : {report['faithfulness']} "
-              f"(cov {report['faithfulness_coverage']})")
-        for r in report["per_case"]:
-            print(f"    {r['case_key']:22} ret={str(r['retrieved']):5} "
-                  f"rank={str(r['rank']):5} cite={str(r['citation_ok']):5} "
-                  f"ref={str(r['refusal_ok']):5} faith={r['faithfulness']}")
+    try:
+        for repo in data["repos"]:
+            print(f"\n===== REPO: {repo['name']} ({len(repo['documents'])} docs, "
+                  f"{len(repo['cases'])} cases) =====")
+            report = run_repo(repo, embedding_mode, embedding_provider, database_url=pg_db_url)
+            results.append(report)
+            if "error" in report:
+                print(f"  ERROR: {report['error']}")
+                continue
+            print(f"  status           : {report['status']}")
+            print(f"  gate_result      : {report['gate_result']}  ({report['gate_reason']})")
+            print(f"  total/passed     : {report['total_cases']}/{report['passed_cases']} "
+                  f"(failed {report['failed_cases']})")
+            print(f"  recall@5         : {report['recall_at_k']}")
+            print(f"  citation_acc     : {report['citation_accuracy']} "
+                  f"(strict {report.get('citation_accuracy_strict')})")
+            print(f"  refusal_acc      : {report['refusal_accuracy']}")
+            print(f"  faithfulness     : {report['faithfulness']} "
+                  f"(cov {report['faithfulness_coverage']})")
+            for r in report["per_case"]:
+                print(f"    {r['case_key']:22} ret={str(r['retrieved']):5} "
+                      f"rank={str(r['rank']):5} cite={str(r['citation_ok']):5} "
+                      f"ref={str(r['refusal_ok']):5} faith={r['faithfulness']}")
+    finally:
+        if pg_db_name:
+            print(f"[db] dropping disposable PostgreSQL database {pg_db_name}")
+            drop_pg_database(postgres_url, pg_db_name)
 
     out = Path(out_path) if out_path else HERE.parent / "tmp_golden_report.json"
     out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")

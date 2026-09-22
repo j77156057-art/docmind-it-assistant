@@ -81,6 +81,49 @@ jobs:
       - name: Check dependency consistency
         run: python -m pip check
 
+  golden-eval:
+    runs-on: ubuntu-latest
+    # The golden set imports ~42 documents through the real HTTP stack and embeds them; budget
+    # generously. Runs in parallel with the unit suite below.
+    timeout-minutes: 20
+
+    # Reuses the same pgvector service: the script provisions and drops its own disposable database
+    # on this server, so the run exercises the production pgvector + tsvector SQL RRF retrieval path
+    # rather than the SQLite portable full-table-scan path that `unittest discover` used to run.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: docmind
+          POSTGRES_PASSWORD: change-me
+          POSTGRES_DB: docmind_it
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt -r requirements-worker.txt
+      - name: Run golden evaluation against PostgreSQL
+        env:
+          IT_TEST_POSTGRES_URL: postgresql+psycopg://docmind:change-me@127.0.0.1:5432/docmind_it
+        run: python -B scripts/run_golden_eval.py --embedding hash --out golden_report.json
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-eval-report
+          path: golden_report.json
+
   dependency-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10

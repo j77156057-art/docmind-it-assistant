@@ -6,7 +6,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from admin_app import create_admin_app
-from backend import AppSettings, QueryDatabase
+from backend import AppSettings, EvaluationService, QueryDatabase
 
 
 PRINTER = (
@@ -150,10 +150,70 @@ class EvaluationGateTests(unittest.TestCase):
             for item in per_case.values():
                 self.assertLessEqual(
                     set(item["detail"]),
-                    {"hit_count", "expected_rank", "heading_matched", "faithfulness"},
+                    {"hit_count", "expected_rank", "heading_matched", "faithfulness",
+                     "citation_ok_strict", "citation_ok_relaxed", "cited_document_rank"},
                 )
             self.assertEqual(cases.json()["gate_mode"], "warn")
             self.assertEqual(cases.json()["thresholds"]["min_recall"], 0.8)
+
+    def test_citation_strict_vs_relaxed_diverge(self):
+        # The gate used to check only the FIRST matched chunk's heading and break, so a correct
+        # document whose leading chunk carried a different heading scored as a miss. Dual-track
+        # citation keeps strict (first chunk) and relaxed (any chunk) separate. This test pins the
+        # divergence so a future refactor cannot silently collapse the two again.
+        from unittest.mock import MagicMock
+
+        class FakeRetriever:
+            embeddings = None  # EvaluationService.__init__ reads retriever.embeddings
+
+            def retrieve(self, *args, **kwargs):  # noqa: D401 - deterministic stub
+                return [
+                    {"source_key": "manual/printer", "heading": "错误章节",
+                     "content": "wrong section about zebra driver", "parent_content": "wrong"},
+                    {"source_key": "manual/printer", "heading": "正确章节",
+                     "content": "right section about zebra driver", "parent_content": "right"},
+                ]
+
+        settings = AppSettings(
+            environment="test", database_url="sqlite:////tmp/docmind_eval_test.db",
+            project_root=Path("."), auth_mode="trusted_headers",
+            auth_subject_salt="unit-test-subject-salt", log_level="CRITICAL",
+            evaluation_top_k=5,
+        )
+        service = EvaluationService(settings=settings, database=MagicMock(),
+                                     retriever=FakeRetriever())
+
+        later_match = service._evaluate_case({
+            "case_id": 1, "question": "zebra printer driver",
+            "expected_document_key": "manual/printer", "expected_heading": "正确章节",
+            "expect_refusal": False,
+        })
+        self.assertTrue(later_match["retrieved"])
+        self.assertEqual(later_match["cited_document_rank"], 1)
+        self.assertFalse(later_match["citation_ok_strict"])
+        self.assertTrue(later_match["citation_ok_relaxed"])
+        # The expected heading only matches a *later* chunk, so the OLD strict-only gate would
+        # have scored this as a citation miss. Dual-track relaxed now passes it; citation_ok (the
+        # gate's effective signal) follows relaxed, with citation_ok_strict=False recording that
+        # the leading chunk did not match.
+        self.assertTrue(later_match["citation_ok"])
+
+        first_match = service._evaluate_case({
+            "case_id": 2, "question": "zebra printer driver",
+            "expected_document_key": "manual/printer", "expected_heading": "错误章节",
+            "expect_refusal": False,
+        })
+        self.assertTrue(first_match["citation_ok_strict"])
+        self.assertTrue(first_match["citation_ok_relaxed"])
+
+        absent = service._evaluate_case({
+            "case_id": 3, "question": "anything",
+            "expected_document_key": "manual/absent", "expected_heading": "驱动安装",
+            "expect_refusal": False,
+        })
+        self.assertIsNone(absent["cited_document_rank"])
+        self.assertFalse(absent["citation_ok_strict"])
+        self.assertFalse(absent["citation_ok_relaxed"])
 
     def seed_review_flow(self, client: TestClient, editor: dict[str, str],
                          reviewer: dict[str, str]) -> tuple[int, int]:
