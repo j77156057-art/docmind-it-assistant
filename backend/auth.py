@@ -176,6 +176,8 @@ class Principal:
     roles: frozenset[str]
     groups: frozenset[str]
     display_name: str = ""
+    departments: frozenset[str] = frozenset()
+    oidc_sub: str | None = None
 
     def allows(self, required_role: str) -> bool:
         required = ROLE_LEVELS.get(required_role, 99)
@@ -267,6 +269,7 @@ def _claim_values(claims: Mapping, path: str) -> frozenset[str]:
 class OIDCAuthenticator:
     def __init__(self, *, mode: str, issuer: str, audience: str, jwks_url: str,
                  subject_salt: str, role_claim: str = "roles", group_claim: str = "groups",
+                 department_claim: str = "department",
                  algorithms: tuple[str, ...] = ("RS256",), leeway_seconds: int = 30,
                  key_resolver: Callable[[str], object] | None = None,
                  local_username: str = "admin", local_password_hash: str = "",
@@ -285,6 +288,7 @@ class OIDCAuthenticator:
         self.subject_salt = subject_salt
         self.role_claim = role_claim
         self.group_claim = group_claim
+        self.department_claim = department_claim
         self.algorithms = algorithms
         self.leeway_seconds = leeway_seconds
         self._key_resolver = key_resolver
@@ -654,16 +658,23 @@ class OIDCAuthenticator:
         return claims
 
     def _principal_from_claims(self, claims: Mapping) -> Principal:
+        departments = _claim_values(claims, self.department_claim)
+        # oidc_sub carries the app-internal (hashed) identity, never the raw IdP ``sub`` claim,
+        # so the original subject value never leaks into logs or ``repr``.
+        oidc_sub = subject_identifier(str(claims["sub"]), self.subject_salt)
         return self._principal(
             str(claims["sub"]), _claim_values(claims, self.role_claim),
             _claim_values(claims, self.group_claim), self._display_name(claims),
+            departments=departments, oidc_sub=oidc_sub,
         )
 
     @staticmethod
     def _display_name(claims: Mapping) -> str:
         return str(claims.get("name") or claims.get("preferred_username") or "")[:128]
 
-    def _principal(self, subject: str, roles, groups, display_name: str = "") -> Principal:
+    def _principal(self, subject: str, roles, groups, display_name: str = "",
+                   departments: frozenset[str] = frozenset(),
+                   oidc_sub: str | None = None) -> Principal:
         normalized_roles = frozenset(
             str(role).strip().lower() for role in roles
         ) & KNOWN_ROLES
@@ -679,4 +690,6 @@ class OIDCAuthenticator:
             roles=normalized_roles,
             groups=normalized_groups,
             display_name=display_name[:128],
+            departments=departments,
+            oidc_sub=oidc_sub,
         )

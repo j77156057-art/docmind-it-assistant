@@ -110,6 +110,8 @@ class DocumentIngestionRetrievalTests(unittest.TestCase):
             principal = Principal("viewer-1", frozenset({"viewer"}), frozenset())
 
             result = service.query("overview", "文档库有哪些内容？", principal)
+            # P2: principal_id 应用层校验要求被引用主体存在，先建用户 "viewer-1"。
+            database.sync_org_on_login(principal)
             database.set_document_acl(
                 private["document_id"], [("user", "viewer-1")],
                 actor_subject_id="admin-1", request_id="overview-acl",

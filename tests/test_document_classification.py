@@ -86,7 +86,7 @@ class DocumentClassificationTests(unittest.TestCase):
         """Retrieve as this principal, at the clearance the application derives for them."""
         return database.hybrid_search(
             QUESTION, vector, subject_id=principal.subject_id,
-            roles=principal.acl_roles, groups=principal.acl_groups,
+            roles=principal.acl_roles,
             allow_confidential=principal.confidential_clearance,
         )
 
@@ -154,6 +154,11 @@ class DocumentClassificationTests(unittest.TestCase):
                 root, classification="confidential", access_scope="restricted",
             )
             try:
+                # P2: principal_id 应用层校验要求被引用主体存在，先建用户 "auditor-1"。
+                database.sync_org_on_login(Principal(
+                    subject_id="auditor-1", roles=frozenset(), groups=frozenset(),
+                    display_name="Auditor 1",
+                ))
                 database.set_document_acl(
                     document_id, [("role", "viewer"), ("user", "auditor-1")],
                     actor_subject_id="admin", request_id="classification-acl",

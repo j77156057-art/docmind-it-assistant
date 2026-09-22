@@ -169,9 +169,19 @@ class SsoRbacAclTests(unittest.TestCase):
             imported = ingestion.import_file(path, source_key="secret/finance")
             vector = list(embeddings.embed(["财务系统恢复码"], request_id="acl-test").vectors[0])
 
+            # P2: groups are now resolved from the org table (DB authority), so the referenced
+            # principals must exist and user-2 must actually belong to "finance".
+            for _subj, _grps in (
+                ("user-1", frozenset()),
+                ("user-2", frozenset({"finance"})),
+                ("user-3", frozenset()),
+            ):
+                database.sync_org_on_login(Principal(
+                    subject_id=_subj, roles=frozenset(), groups=_grps, display_name=_subj,
+                ))
             cases = [
                 (("user", "user-1"), {"subject_id": "user-1"}),
-                (("group", "finance"), {"subject_id": "user-2", "groups": ("finance",)}),
+                (("group", "finance"), {"subject_id": "user-2"}),
                 (("role", "auditor"), {"subject_id": "user-3", "roles": ("auditor",)}),
             ]
             for index, (entry, identity) in enumerate(cases):
@@ -195,11 +205,11 @@ class SsoRbacAclTests(unittest.TestCase):
             guest = Principal("guest-1", frozenset({"viewer"}), frozenset({"guest"}))
             self.assertTrue(database.hybrid_search(
                 "财务系统恢复码", vector, subject_id=viewer.subject_id,
-                roles=viewer.acl_roles, groups=viewer.acl_groups,
+                roles=viewer.acl_roles,
             ))
             self.assertEqual(database.hybrid_search(
                 "财务系统恢复码", vector, subject_id=guest.subject_id,
-                roles=guest.acl_roles, groups=guest.acl_groups,
+                roles=guest.acl_roles,
             ), [])
             database.dispose()
 
@@ -208,6 +218,11 @@ class SsoRbacAclTests(unittest.TestCase):
             settings = self.make_settings(root)
             database = QueryDatabase(settings.database_url)
             database.initialize()
+            # P2: principal_id 应用层校验要求被引用主体（group）存在，先建 "finance" 组。
+            database.sync_org_on_login(Principal(
+                subject_id="seed-user", roles=frozenset(), groups=frozenset({"finance"}),
+                display_name="Seed",
+            ))
             document = database.begin_document_import(
                 source_key="admin-test", title="Admin test", mime_type="text/plain",
                 content_sha256="a" * 64,
@@ -248,6 +263,7 @@ class SsoRbacAclTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(visible.json()["entries"], [{
             "principal_type": "group", "principal_id": "finance",
+            "principal_name": "finance",
         }])
         self.assertEqual(tuple(audit), ("document_acl_replace", "acl-admin-request"))
 

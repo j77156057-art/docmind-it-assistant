@@ -43,7 +43,7 @@ class HybridRetriever:
             )
             log_event(LOGGER, logging.WARNING, "embedding_query_failed", reason=exc.code)
             return self.database.lexical_search(
-                question, self.top_k, subject_id=subject_id, roles=roles, groups=groups,
+                question, self.top_k, subject_id=subject_id, roles=roles,
                 allow_confidential=allow_confidential,
             )
         self.database.record_embedding_usages(
@@ -52,6 +52,6 @@ class HybridRetriever:
         )
         return self.database.hybrid_search(
             question, list(result.vectors[0]), self.top_k,
-            subject_id=subject_id, roles=roles, groups=groups,
+            subject_id=subject_id, roles=roles,
             allow_confidential=allow_confidential,
         )

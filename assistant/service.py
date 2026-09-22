@@ -168,7 +168,7 @@ class ITQueryService:
         named_documents = []
         if named_overview:
             outline = self.database.accessible_document_outline(
-                subject_id=subject_id, roles=roles, groups=groups,
+                subject_id=subject_id, roles=roles,
                 allow_confidential=bool(principal and principal.confidential_clearance),
             )
             named_documents = self._matching_documents(named_overview, outline)
@@ -185,7 +185,7 @@ class ITQueryService:
             documents = (
                 named_documents if named_overview
                 else self.database.accessible_document_outline(
-                    subject_id=subject_id, roles=roles, groups=groups,
+                    subject_id=subject_id, roles=roles,
                     allow_confidential=bool(principal and principal.confidential_clearance),
                 )
             )
@@ -218,7 +218,7 @@ class ITQueryService:
                     })
         else:
             imported_hits = self.retriever.retrieve(
-                question, query_id, subject_id=subject_id, roles=roles, groups=groups,
+                question, query_id, subject_id=subject_id, roles=roles,
                 # Clearance is taken from the asking principal, so a viewer can never be served
                 # confidential chunks through a generative answer.
                 allow_confidential=bool(principal and principal.confidential_clearance),

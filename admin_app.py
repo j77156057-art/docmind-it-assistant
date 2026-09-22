@@ -56,8 +56,18 @@ ORG_DEPARTMENT_COLUMNS = ["department_key", "name", "parent_key", "created_at"]
 
 
 class AclEntryReq(BaseModel):
-    principal_type: Literal["user", "group", "role"]
+    principal_type: Literal["user", "group", "role", "department"]
     principal_id: str = Field(min_length=1, max_length=256)
+
+
+class DepartmentCreateReq(BaseModel):
+    department_key: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="", max_length=256)
+
+
+class DepartmentMemberReq(BaseModel):
+    subject_id: str | None = Field(default=None, max_length=64)
+    oidc_sub: str | None = Field(default=None, max_length=256)
 
 
 class DocumentAclReq(BaseModel):
@@ -1198,6 +1208,69 @@ def create_admin_app(settings: AppSettings | None = None,
             action="org_departments.export", target_type="org_departments_export",
             principal=principal,
         )
+
+    @application.post("/api/admin/org/departments")
+    async def admin_org_department_create(
+        payload: DepartmentCreateReq,
+        principal: Principal = Depends(require_capability("acl.write"))):
+        """Create (upsert) a department. Departments decide document visibility via the
+        ``department`` ACL principal type, so this write end shares the ``acl.write`` capability
+        with ``replace_document_acl``."""
+        try:
+            database.create_department(
+                payload.department_key, payload.name,
+                actor_subject_id=principal.subject_id,
+                request_id=request_id_context.get() or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {"ok": True, "department_key": payload.department_key}
+
+    @application.delete("/api/admin/org/departments/{department_key}")
+    async def admin_org_department_delete(
+        department_key: str,
+        principal: Principal = Depends(require_capability("acl.write"))):
+        """Delete a department; its members are removed (FK cascade on PG, explicit on SQLite)."""
+        try:
+            database.delete_department(
+                department_key,
+                actor_subject_id=principal.subject_id,
+                request_id=request_id_context.get() or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {"ok": True, "department_key": department_key}
+
+    @application.post("/api/admin/org/departments/{department_key}/members")
+    async def admin_org_department_add_member(
+        department_key: str, payload: DepartmentMemberReq,
+        principal: Principal = Depends(require_capability("acl.write"))):
+        """Add a user to a department. Identify the member by ``subject_id`` or ``oidc_sub``
+        (subject_id takes precedence; oidc_sub is resolved to a subject_id)."""
+        try:
+            database.add_user_to_department(
+                department_key, subject_id=payload.subject_id, oidc_sub=payload.oidc_sub,
+                actor_subject_id=principal.subject_id,
+                request_id=request_id_context.get() or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {"ok": True, "department_key": department_key}
+
+    @application.delete("/api/admin/org/departments/{department_key}/members/{subject_id}")
+    async def admin_org_department_remove_member(
+        department_key: str, subject_id: str,
+        principal: Principal = Depends(require_capability("acl.write"))):
+        """Remove a user from a department."""
+        try:
+            database.remove_user_from_department(
+                department_key, subject_id,
+                actor_subject_id=principal.subject_id,
+                request_id=request_id_context.get() or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return {"ok": True, "department_key": department_key, "subject_id": subject_id}
 
     @application.get("/api/admin/retention/preview")
     async def retention_preview(

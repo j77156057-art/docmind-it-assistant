@@ -1471,7 +1471,42 @@ class QueryDatabase:
         with self._sessions() as session:
             return bool(session.scalar(statement))
 
-    def accessible_document_outline(self, *, subject_id: str = "legacy", roles=(), groups=(),
+    # --- 主体解析（DB 权威）：groups/departments 从组织表实时取，claims 不再作为执行依据 ---
+
+    def _resolve_principal_groups(self, subject_id: str) -> set[str]:
+        """Group keys the subject belongs to, resolved from ``user_group_memberships`` (DB authority).
+
+        Returns a lowercase set. The ``groups`` claim is no longer trusted for execution.
+        """
+        subject_id = (subject_id or "").strip().lower()
+        if not subject_id or subject_id == "legacy":
+            return set()
+        with self._sessions() as session:
+            rows = session.execute(
+                select(UserGroupMembershipRecord.group_key).where(
+                    UserGroupMembershipRecord.subject_id == subject_id
+                )
+            ).all()
+        return {str(row[0]).lower() for row in rows}
+
+    def _resolve_principal_departments(self, subject_id: str) -> set[str]:
+        """Department keys the subject belongs to, resolved from ``user_department`` (DB authority).
+
+        Returns a lowercase set. Used to expand the ``department`` ACL principal type: every
+        member of a department can read documents granted to that department.
+        """
+        subject_id = (subject_id or "").strip().lower()
+        if not subject_id or subject_id == "legacy":
+            return set()
+        with self._sessions() as session:
+            rows = session.execute(
+                select(UserDepartmentRecord.department_key).where(
+                    UserDepartmentRecord.subject_id == subject_id
+                )
+            ).all()
+        return {str(row[0]).lower() for row in rows}
+
+    def accessible_document_outline(self, *, subject_id: str = "legacy", roles=(),
                                     max_documents: int = 20, max_sections: int = 8,
                                     allow_confidential: bool = False) -> list[dict]:
         """Return an ACL-filtered outline without exposing document contents.
@@ -1479,9 +1514,14 @@ class QueryDatabase:
         Titles and headings are withheld for classifications the caller cannot read: a
         confidential document's title alone can be sensitive, and this path feeds the
         assistant's overview answer.
+
+        ``roles`` still comes from the claims-derived principal (no org table for roles).
+        ``groups`` and ``departments`` are resolved from the org tables by ``subject_id`` (DB
+        authority) so a stale claim cannot widen access.
         """
         normalized_roles = {str(item).strip().lower() for item in roles if str(item).strip()}
-        normalized_groups = {str(item).strip().lower() for item in groups if str(item).strip()}
+        normalized_groups = self._resolve_principal_groups(subject_id)
+        normalized_departments = self._resolve_principal_departments(subject_id)
         acl_matches = [and_(
             DocumentAclRecord.principal_type == "user",
             DocumentAclRecord.principal_id == subject_id.lower(),
@@ -1495,6 +1535,11 @@ class QueryDatabase:
             acl_matches.append(and_(
                 DocumentAclRecord.principal_type == "group",
                 DocumentAclRecord.principal_id.in_(normalized_groups),
+            ))
+        if normalized_departments:
+            acl_matches.append(and_(
+                DocumentAclRecord.principal_type == "department",
+                DocumentAclRecord.principal_id.in_(normalized_departments),
             ))
         allowed = or_(
             DocumentRecord.access_scope == "public",
@@ -1546,19 +1591,21 @@ class QueryDatabase:
         return result
 
     def hybrid_search(self, query: str, embedding: list[float], limit: int = 5, *,
-                      subject_id: str = "legacy", roles=(), groups=(),
+                      subject_id: str = "legacy", roles=(),
                       allow_confidential: bool = False) -> list[dict]:
         if self.backend == "postgresql":
             return self._postgres_hybrid_search(
-                query, embedding, limit, subject_id, roles, groups, allow_confidential,
+                query, embedding, limit, subject_id, roles, allow_confidential,
             )
         return self._portable_hybrid_search(
-            query, embedding, limit, subject_id, roles, groups, allow_confidential,
+            query, embedding, limit, subject_id, roles, allow_confidential,
         )
 
     def lexical_search(self, query: str, limit: int = 5, *, subject_id: str = "legacy",
-                       roles=(), groups=(), allow_confidential: bool = False) -> list[dict]:
+                       roles=(), allow_confidential: bool = False) -> list[dict]:
         if self.backend == "postgresql":
+            groups = self._resolve_principal_groups(subject_id)
+            departments = self._resolve_principal_departments(subject_id)
             statement = text("""
                 SELECT c.id, d.title, d.source_key, v.version, c.ordinal, c.heading, c.page_number,
                        c.content, ts_rank_cd(
@@ -1574,6 +1621,7 @@ class QueryDatabase:
                       (a.principal_type = 'user' AND a.principal_id = :subject_id)
                       OR (a.principal_type = 'role' AND a.principal_id = ANY(string_to_array(:acl_roles, ',')))
                       OR (a.principal_type = 'group' AND a.principal_id = ANY(string_to_array(:acl_groups, ',')))
+                      OR (a.principal_type = 'department' AND a.principal_id = ANY(string_to_array(:acl_departments, ',')))
                     )
                   ))
                   AND (d.classification = ANY(string_to_array(:open_classifications, ','))
@@ -1586,6 +1634,7 @@ class QueryDatabase:
                     "query": self._postgres_websearch_query(query), "result_limit": limit,
                     "subject_id": subject_id, "acl_roles": ",".join(roles),
                     "acl_groups": ",".join(groups),
+                    "acl_departments": ",".join(departments),
                     "open_classifications": ",".join(sorted(OPEN_CLASSIFICATIONS)),
                     "allow_confidential": allow_confidential,
                 }).mappings().all()]
@@ -1593,15 +1642,17 @@ class QueryDatabase:
                 result["content"] = self._field_encryptor.decrypt(result["content"])
             return results
         results = self._portable_hybrid_search(
-            query, [0.0] * 1024, max(limit * 4, 20), subject_id, roles, groups,
+            query, [0.0] * 1024, max(limit * 4, 20), subject_id, roles,
             allow_confidential,
         )
         lexical = [item for item in results if item.get("lexical_rank") is not None]
         return sorted(lexical, key=lambda item: item["lexical_rank"])[:limit]
 
     def _postgres_hybrid_search(self, query: str, embedding: list[float], limit: int,
-                                subject_id: str, roles, groups,
+                                subject_id: str, roles,
                                 allow_confidential: bool = False) -> list[dict]:
+        groups = self._resolve_principal_groups(subject_id)
+        departments = self._resolve_principal_departments(subject_id)
         statement = text("""
             WITH eligible AS (
                 SELECT c.*, d.title, d.source_key, v.version
@@ -1615,6 +1666,7 @@ class QueryDatabase:
                       (a.principal_type = 'user' AND a.principal_id = :subject_id)
                       OR (a.principal_type = 'role' AND a.principal_id = ANY(string_to_array(:acl_roles, ',')))
                       OR (a.principal_type = 'group' AND a.principal_id = ANY(string_to_array(:acl_groups, ',')))
+                      OR (a.principal_type = 'department' AND a.principal_id = ANY(string_to_array(:acl_departments, ',')))
                     )
                   ))
                   AND (d.classification = ANY(string_to_array(:open_classifications, ','))
@@ -1663,6 +1715,7 @@ class QueryDatabase:
                 "result_limit": limit,
                 "subject_id": subject_id, "acl_roles": ",".join(roles),
                 "acl_groups": ",".join(groups),
+                "acl_departments": ",".join(departments),
                 "open_classifications": ",".join(sorted(OPEN_CLASSIFICATIONS)),
                 "allow_confidential": allow_confidential,
             }).mappings().all()
@@ -1672,7 +1725,7 @@ class QueryDatabase:
         return results
 
     def _portable_hybrid_search(self, query: str, embedding: list[float], limit: int,
-                                subject_id: str = "legacy", roles=(), groups=(),
+                                subject_id: str = "legacy", roles=(),
                                 allow_confidential: bool = False) -> list[dict]:
         statement = (
             select(DocumentChunkRecord, DocumentRecord, DocumentVersionRecord.version)
@@ -1694,10 +1747,11 @@ class QueryDatabase:
         for document_id, principal_type, principal_id in acl_rows:
             acl_by_document.setdefault(document_id, set()).add((principal_type, principal_id))
         roles = {str(item).lower() for item in roles}
-        groups = {str(item).lower() for item in groups}
+        groups = self._resolve_principal_groups(subject_id)
+        departments = self._resolve_principal_departments(subject_id)
         rows = [row for row in rows if self._document_allowed(
-            row[1], subject_id, roles, groups, acl_by_document.get(row[1].id, set()),
-            allow_confidential,
+            row[1], subject_id, roles, acl_by_document.get(row[1].id, set()),
+            allow_confidential, departments=departments,
         )]
         if not rows:
             return []
@@ -1752,24 +1806,44 @@ class QueryDatabase:
             })
         return sorted(results, key=lambda item: item["score"], reverse=True)[:limit]
 
-    @staticmethod
-    def _document_allowed(document, subject_id: str, roles, groups, entries,
-                          allow_confidential: bool = False) -> bool:
+    def _document_allowed(self, document, subject_id: str, roles, entries,
+                          allow_confidential: bool = False, departments: set[str] | None = None) -> bool:
         # Classification narrows access before the ACL is even consulted, so a document marked
         # public but classified confidential still stays out of reach of a low-clearance caller.
         if not allow_confidential and not is_open_classification(document.classification):
             return False
         if document.access_scope == "public":
             return True
+        # groups / departments are resolved from the org tables (DB authority), not the claims.
+        groups = self._resolve_principal_groups(subject_id)
+        departments = departments or set()
         return (
             ("user", subject_id.lower()) in entries
             or any(("role", role) in entries for role in roles)
             or any(("group", group) in entries for group in groups)
+            or any(("department", department) in entries for department in departments)
         )
+
+    def _validate_acl_principal(self, session, kind: str, value: str) -> None:
+        """Application-layer FK (soft constraint, P2-2): reject dangling principal_ids.
+
+        `user`/`group`/`department` must exist in their org table; `role` has no table and is
+        not checked. Raises ``ValueError("文档 ACL 主体不存在")`` so the endpoint can map it to 400.
+        """
+        if kind == "user":
+            if session.get(UserRecord, value) is None:
+                raise ValueError("文档 ACL 主体不存在")
+        elif kind == "group":
+            if session.get(GroupRecord, value) is None:
+                raise ValueError("文档 ACL 主体不存在")
+        elif kind == "department":
+            if session.get(DepartmentRecord, value) is None:
+                raise ValueError("文档 ACL 主体不存在")
+        # role: no org table, nothing to validate.
 
     def set_document_acl(self, document_id: int, entries, *, actor_subject_id: str,
                          request_id: str, access_scope: str = "restricted") -> None:
-        allowed_types = {"user", "group", "role"}
+        allowed_types = {"user", "group", "role", "department"}
         access_scope = str(access_scope).strip().lower()
         if access_scope not in {"public", "restricted"}:
             raise ValueError("文档访问范围无效")
@@ -1785,6 +1859,8 @@ class QueryDatabase:
             document = session.get(DocumentRecord, document_id)
             if document is None:
                 raise ValueError("文档不存在")
+            for kind, value in sorted(normalized):
+                self._validate_acl_principal(session, kind, value)
             document.access_scope = access_scope
             document.updated_at = datetime.now(timezone.utc)
             session.query(DocumentAclRecord).filter(
@@ -1806,8 +1882,40 @@ class QueryDatabase:
         ).order_by(DocumentAclRecord.id)
         with self._sessions() as session:
             rows = session.scalars(statement).all()
-        return [{"principal_type": row.principal_type, "principal_id": row.principal_id}
-                for row in rows]
+            if not rows:
+                return []
+            user_ids = [row.principal_id for row in rows if row.principal_type == "user"]
+            group_ids = [row.principal_id for row in rows if row.principal_type == "group"]
+            dept_ids = [row.principal_id for row in rows if row.principal_type == "department"]
+            user_names = dict(session.execute(
+                select(UserRecord.subject_id, UserRecord.display_name).where(
+                    UserRecord.subject_id.in_(user_ids))
+            ).all()) if user_ids else {}
+            group_names = dict(session.execute(
+                select(GroupRecord.group_key, GroupRecord.display_name).where(
+                    GroupRecord.group_key.in_(group_ids))
+            ).all()) if group_ids else {}
+            dept_names = dict(session.execute(
+                select(DepartmentRecord.department_key, DepartmentRecord.name).where(
+                    DepartmentRecord.department_key.in_(dept_ids))
+            ).all()) if dept_ids else {}
+        result = []
+        for row in rows:
+            if row.principal_type == "user":
+                name = user_names.get(row.principal_id, row.principal_id)
+            elif row.principal_type == "group":
+                name = group_names.get(row.principal_id, row.principal_id)
+            elif row.principal_type == "department":
+                name = dept_names.get(row.principal_id, row.principal_id)
+            else:
+                # role has no org table; the id is already the human-readable name.
+                name = row.principal_id
+            result.append({
+                "principal_type": row.principal_type,
+                "principal_id": row.principal_id,
+                "principal_name": name,
+            })
+        return result
 
     def document_access(self, document_id: int) -> dict:
         with self._sessions() as session:
@@ -2300,6 +2408,126 @@ class QueryDatabase:
     def org_departments_export(self, *, limit: int = 2000) -> list[dict]:
         return self.org_departments(limit=limit)
 
+    # --- 部门维护写端（P1-5 / §7）-------------------------------------------------
+
+    def subject_id_by_oidc_sub(self, oidc_sub: str) -> str | None:
+        """Resolve a user's HMAC ``subject_id`` from their raw OIDC ``sub``.
+
+        Used by the department member endpoints when a member is identified by ``oidc_sub``
+        instead of ``subject_id``. Returns ``None`` when no user carries that ``oidc_sub``.
+        """
+        oidc_sub = (oidc_sub or "").strip()
+        if not oidc_sub:
+            return None
+        with self._sessions() as session:
+            row = session.execute(
+                select(UserRecord.subject_id).where(UserRecord.oidc_sub == oidc_sub)
+            ).one_or_none()
+        return row[0] if row is not None else None
+
+    def create_department(self, department_key: str, name: str, *,
+                          actor_subject_id: str, request_id: str) -> None:
+        """Upsert a department (metadata only). Audited as ``org_department.create``."""
+        department_key = (department_key or "").strip()
+        name = (name or "").strip()
+        if not department_key or len(department_key) > 64:
+            raise ValueError("部门键无效")
+        key = department_key[:64]
+        with self._sessions.begin() as session:
+            existing = session.get(DepartmentRecord, key)
+            if existing is None:
+                session.add(DepartmentRecord(
+                    department_key=key, name=name or key,
+                    created_at=datetime.now(timezone.utc),
+                ))
+            else:
+                existing.name = name or existing.name
+        self.record_audit_event(
+            actor_subject_id=actor_subject_id, action="org_department.create",
+            target_type="department", target_ref=key, result="success",
+            request_id=request_id or "",
+        )
+
+    def delete_department(self, department_key: str, *,
+                          actor_subject_id: str, request_id: str) -> None:
+        """Delete a department; its members are removed (FK cascade on PG, explicit on SQLite)."""
+        department_key = (department_key or "").strip()
+        if not department_key:
+            raise ValueError("部门键无效")
+        key = department_key[:64]
+        with self._sessions.begin() as session:
+            department = session.get(DepartmentRecord, key)
+            if department is not None:
+                session.delete(department)
+                # SQLite does not enforce ON DELETE CASCADE without PRAGMA; clean members explicitly
+                # so the two backends stay consistent. On PG the cascade already removed them.
+                session.query(UserDepartmentRecord).filter(
+                    UserDepartmentRecord.department_key == key
+                ).delete()
+        self.record_audit_event(
+            actor_subject_id=actor_subject_id, action="org_department.delete",
+            target_type="department", target_ref=key, result="success",
+            request_id=request_id or "",
+        )
+
+    def add_user_to_department(self, department_key: str, *, subject_id: str | None = None,
+                               oidc_sub: str | None = None, actor_subject_id: str,
+                               request_id: str) -> None:
+        """Add a user to a department. ``subject_id`` takes precedence; ``oidc_sub`` is resolved.
+
+        Raises ``ValueError`` when the department is missing or the member cannot be resolved.
+        """
+        department_key = (department_key or "").strip()
+        if not department_key:
+            raise ValueError("部门键无效")
+        # U3: subject_id wins; fall back to resolving oidc_sub.
+        resolved = (subject_id or "").strip() or None
+        if resolved is None and oidc_sub:
+            resolved = self.subject_id_by_oidc_sub(oidc_sub)
+            if resolved is None:
+                raise ValueError("文档 ACL 主体不存在")
+        if not resolved:
+            raise ValueError("部门成员标识无效")
+        key = department_key[:64]
+        with self._sessions.begin() as session:
+            if session.get(DepartmentRecord, key) is None:
+                raise ValueError("文档 ACL 主体不存在")
+            membership = session.get(
+                UserDepartmentRecord,
+                {"subject_id": resolved[:64], "department_key": key},
+            )
+            if membership is None:
+                session.add(UserDepartmentRecord(
+                    subject_id=resolved[:64], department_key=key,
+                    created_at=datetime.now(timezone.utc),
+                ))
+        self.record_audit_event(
+            actor_subject_id=actor_subject_id, action="org_department.member_add",
+            target_type="department_member", target_ref=f"{key}:{resolved[:64]}",
+            result="success", request_id=request_id or "",
+        )
+
+    def remove_user_from_department(self, department_key: str, subject_id: str, *,
+                                    actor_subject_id: str, request_id: str) -> None:
+        """Remove a user from a department. Audited as ``org_department.member_remove``."""
+        department_key = (department_key or "").strip()
+        subject_id = (subject_id or "").strip()
+        if not department_key or not subject_id:
+            raise ValueError("部门成员标识无效")
+        key = department_key[:64]
+        with self._sessions.begin() as session:
+            membership = session.get(
+                UserDepartmentRecord,
+                {"subject_id": subject_id[:64], "department_key": key},
+            )
+            if membership is not None:
+                session.delete(membership)
+        self.record_audit_event(
+            actor_subject_id=actor_subject_id, action="org_department.member_remove",
+            target_type="department_member", target_ref=f"{key}:{subject_id[:64]}",
+            result="success", request_id=request_id or "",
+        )
+
     def sync_org_on_login(self, principal: Principal) -> None:
         """Idempotent org sync on OIDC login: upsert user, groups and memberships.
 
@@ -2322,6 +2550,11 @@ class QueryDatabase:
                 user.last_seen_at = now
                 if not user.status:
                     user.status = "active"
+            # oidc_sub 幂等写入：仅当非空且旧值为空（不覆盖既有值）。
+            if principal.oidc_sub:
+                oidc_sub = str(principal.oidc_sub)[:256]
+                if not user.oidc_sub:
+                    user.oidc_sub = oidc_sub
             for group_key in sorted(principal.groups or set()):
                 gk = group_key[:256]
                 group = session.get(GroupRecord, gk)
@@ -2335,6 +2568,23 @@ class QueryDatabase:
                 if membership is None:
                     session.add(UserGroupMembershipRecord(
                         subject_id=subject_id, group_key=gk, created_at=now,
+                    ))
+            # 部门（P2）：claims 来源，登录时写入 user_department；执行时仍从组织表实时解析。
+            for department_key in sorted(principal.departments or set()):
+                dk = department_key[:64]
+                department = session.get(DepartmentRecord, dk)
+                if department is None:
+                    department = DepartmentRecord(
+                        department_key=dk, name=dk, created_at=now,
+                    )
+                    session.add(department)
+                membership = session.get(
+                    UserDepartmentRecord,
+                    {"subject_id": subject_id, "department_key": dk},
+                )
+                if membership is None:
+                    session.add(UserDepartmentRecord(
+                        subject_id=subject_id, department_key=dk, created_at=now,
                     ))
 
     # --- Document retention (Phase 4, A-4): 先软后硬 ---------------------------------
