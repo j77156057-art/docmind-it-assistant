@@ -20,6 +20,10 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlunsplit, urlsplit
+
+from alembic import command
+from alembic.config import Config
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -37,6 +41,41 @@ from backend.db_models import (
 )
 
 POSTGRES_URL = os.environ.get("IT_TEST_POSTGRES_URL")
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _pg_server_url(database_url: str, database: str) -> str:
+    """Same server, different database — used for CREATE/DROP DATABASE."""
+    parts = urlsplit(database_url)
+    return urlunsplit((parts.scheme, parts.netloc, f"/{database}", "", ""))
+
+
+def _pg_connect(database_url: str):
+    """psycopg connection for maintenance statements SQLAlchemy cannot run."""
+    from psycopg import connect as psycopg_connect
+
+    dsn = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    return psycopg_connect(dsn, autocommit=True)
+
+
+def _postgres_db() -> tuple[QueryDatabase, str]:
+    """Spin up a fresh migrated PostgreSQL database for one test.
+
+    ``QueryDatabase.initialize()`` is a no-op on PostgreSQL (Alembic is authoritative
+    there), so the schema must be created via ``alembic upgrade head`` — mirroring
+    ``test_indexing_graph_postgres``. Returns the database plus its generated name so the
+    caller can drop it in a finally block.
+    """
+    name = f"docmind_procure_{os.getpid()}_{os.urandom(3).hex()}"
+    url = _pg_server_url(POSTGRES_URL, name)
+    with _pg_connect(_pg_server_url(POSTGRES_URL, "postgres")) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f'CREATE DATABASE "{name}"')
+    config = Config(str(ROOT / "alembic.ini"))
+    config.attributes["database_url"] = url
+    command.upgrade(config, "head")
+    return QueryDatabase(url), name
 
 
 def _admin_settings(root: Path) -> AppSettings:
@@ -148,13 +187,22 @@ class TestProcurementRepository(unittest.TestCase):
 
     @unittest.skipUnless(POSTGRES_URL, "ON DELETE CASCADE 由 CI 在 PostgreSQL 上验证")
     def test_citations_cascade_delete_query_on_postgres(self):
-        db = QueryDatabase(POSTGRES_URL)
-        self._seed_query(db)
-        db.record_citations(1, [{"source": "knowledge.md", "section": "X", "line": 1}])
-        self.assertEqual(len(db.citations()), 1)
-        with db._sessions.begin() as session:
-            session.delete(session.get(QueryRecord, 1))
-        self.assertEqual(len(db.citations()), 0)
+        db, name = _postgres_db()
+        try:
+            self._seed_query(db)
+            db.record_citations(1, [{"source": "knowledge.md", "section": "X", "line": 1}])
+            self.assertEqual(len(db.citations()), 1)
+            with db._sessions.begin() as session:
+                session.delete(session.get(QueryRecord, 1))
+            self.assertEqual(len(db.citations()), 0)
+        finally:
+            db.dispose()
+            with _pg_connect(_pg_server_url(POSTGRES_URL, "postgres")) as connection:
+                with connection.cursor() as cursor:
+                    try:
+                        cursor.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+                    except Exception:  # noqa: BLE001 - fall back on older servers
+                        cursor.execute(f'DROP DATABASE IF EXISTS "{name}"')
 
     # --- 反馈幂等 ----------------------------------------------------------------
 
@@ -237,14 +285,23 @@ class TestProcurementRepository(unittest.TestCase):
 
     @unittest.skipUnless(POSTGRES_URL, "ON DELETE SET NULL 由 CI 在 PostgreSQL 上验证")
     def test_knowledge_gap_set_null_on_query_delete(self):
-        db = QueryDatabase(POSTGRES_URL)
-        self._seed_query(db)
-        gap_id = db.register_knowledge_gap(1, "insufficient_evidence", "cloud")
-        with db._sessions.begin() as session:
-            session.delete(session.get(QueryRecord, 1))
-        with db._sessions() as session:
-            gap = session.get(KnowledgeGapRecord, gap_id)
-            self.assertIsNone(gap.query_id)
+        db, name = _postgres_db()
+        try:
+            self._seed_query(db)
+            gap_id = db.register_knowledge_gap(1, "insufficient_evidence", "cloud")
+            with db._sessions.begin() as session:
+                session.delete(session.get(QueryRecord, 1))
+            with db._sessions() as session:
+                gap = session.get(KnowledgeGapRecord, gap_id)
+                self.assertIsNone(gap.query_id)
+        finally:
+            db.dispose()
+            with _pg_connect(_pg_server_url(POSTGRES_URL, "postgres")) as connection:
+                with connection.cursor() as cursor:
+                    try:
+                        cursor.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+                    except Exception:  # noqa: BLE001 - fall back on older servers
+                        cursor.execute(f'DROP DATABASE IF EXISTS "{name}"')
 
     # --- 组织同步幂等 ------------------------------------------------------------
 
