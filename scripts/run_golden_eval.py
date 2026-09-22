@@ -19,16 +19,18 @@ No network required (hash embeddings, lexical rerank).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))  # ensure repo root (admin_app, backend) is importable
 from admin_app import create_admin_app
 from backend import AppSettings
 
-HERE = Path(__file__).resolve().parent
 GOLDEN = HERE.parent / "golden" / "retrieval_golden_set.json"
 
 HEADERS = {
@@ -37,12 +39,39 @@ HEADERS = {
 }
 
 
-def build_settings(project: Path) -> AppSettings:
+def detect_embedding_mode(arg_mode: str | None) -> tuple[str, str, str | None]:
+    """Resolve the embedding mode for the run.
+
+    Priority: explicit --embedding flag > DASHSCOPE_API_KEY present > offline hash.
+    Returns (mode, provider, reason). ``mode`` is 'provider' (real qwen) or 'hash' (offline).
+    """
+    key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    if arg_mode == "hash":
+        return "hash", "builtin", "explicit --embedding hash"
+    if arg_mode == "provider":
+        if not key:
+            return "provider", "qwen", "explicit --embedding provider but DASHSCOPE_API_KEY missing (will fail on import)"
+        return "provider", "qwen", f"explicit --embedding provider, key len={len(key)}"
+    # auto
+    if key:
+        return "provider", "qwen", f"auto: DASHSCOPE_API_KEY present (len={len(key)})"
+    return "hash", "builtin", "auto: no DASHSCOPE_API_KEY -> offline hash"
+
+
+def build_settings(project: Path, embedding_mode: str, embedding_provider: str) -> AppSettings:
     knowledge = project / "knowledge.md"
     knowledge.write_text("# IT\n", encoding="utf-8")
     web = project / "web" / "index.html"
     web.parent.mkdir(parents=True, exist_ok=True)
     web.write_text("<!doctype html>", encoding="utf-8")
+    # When using a real provider, inject the API key from the environment into
+    # the credentials store (AppSettings.credentials is a plain constructor field).
+    credentials: dict[str, "SecretStr"] = {}
+    if embedding_mode == "provider":
+        from pydantic import SecretStr
+        key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+        if key:
+            credentials["DASHSCOPE_API_KEY"] = SecretStr(key)
     return AppSettings(
         project_root=project,
         environment="test",
@@ -66,13 +95,17 @@ def build_settings(project: Path) -> AppSettings:
         rerank_top_n=20,
         evaluation_faithfulness_enabled=True,
         evaluation_min_faithfulness=0.7,
+        # Embedding backend (set per-run):
+        embedding_mode=embedding_mode,
+        embedding_provider=embedding_provider,
+        credentials=credentials,
     )
 
 
-def run_repo(repo: dict) -> dict:
+def run_repo(repo: dict, embedding_mode: str, embedding_provider: str) -> dict:
     with tempfile.TemporaryDirectory() as root:
         project = Path(root)
-        settings = build_settings(project)
+        settings = build_settings(project, embedding_mode, embedding_provider)
         application = create_admin_app(settings)
         with TestClient(application) as client:
             # 1) index documents
@@ -153,13 +186,25 @@ def run_repo(repo: dict) -> dict:
 
 
 def main() -> int:
+    arg_mode = None
+    for a in sys.argv[1:]:
+        if a.startswith("--embedding"):
+            arg_mode = a.split("=", 1)[1] if "=" in a else None
+            if arg_mode is None and len(sys.argv) > sys.argv.index(a) + 1:
+                arg_mode = sys.argv[sys.argv.index(a) + 1]
+    embedding_mode, embedding_provider, why = detect_embedding_mode(arg_mode)
+    print(f"[embedding] mode={embedding_mode} provider={embedding_provider} ({why})")
+    if embedding_mode == "provider" and not os.environ.get("DASHSCOPE_API_KEY", "").strip():
+        print("[embedding] WARNING: provider mode requested but DASHSCOPE_API_KEY is empty -> "
+              "import will fail with embedding_api_key_missing. Set the env var and retry.")
+
     data = json.loads(GOLDEN.read_text(encoding="utf-8"))
     print(f"Loaded golden set: {len(data['repos'])} repos")
     results = []
     for repo in data["repos"]:
         print(f"\n===== REPO: {repo['name']} ({len(repo['documents'])} docs, "
               f"{len(repo['cases'])} cases) =====")
-        report = run_repo(repo)
+        report = run_repo(repo, embedding_mode, embedding_provider)
         results.append(report)
         if "error" in report:
             print(f"  ERROR: {report['error']}")
