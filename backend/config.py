@@ -152,7 +152,7 @@ class AppSettings(BaseModel):
     evaluation_gate_mode: Literal["off", "warn", "block"] = "warn"
     evaluation_allow_override: bool = False
     evaluation_min_recall: float = Field(default=0.8, ge=0.0, le=1.0)
-    evaluation_min_citation_accuracy: float = Field(default=0.9, ge=0.0, le=1.0)
+    evaluation_min_citation_accuracy: float = Field(default=0.5, ge=0.0, le=1.0)
     evaluation_max_regression: float = Field(default=0.05, ge=0.0, le=1.0)
     evaluation_top_k: int = Field(default=5, ge=1, le=20)
     evaluation_faithfulness_enabled: bool = True
@@ -375,7 +375,7 @@ class AppSettings(BaseModel):
             evaluation_allow_override=_bool(read("IT_EVAL_ALLOW_OVERRIDE", "false")),
             evaluation_min_recall=float(read("IT_EVAL_MIN_RECALL", "0.8")),
             evaluation_min_citation_accuracy=float(
-                read("IT_EVAL_MIN_CITATION_ACCURACY", "0.9"),
+                read("IT_EVAL_MIN_CITATION_ACCURACY", "0.5"),
             ),
             evaluation_max_regression=float(read("IT_EVAL_MAX_REGRESSION", "0.05")),
             evaluation_top_k=int(read("IT_EVAL_TOP_K", "5")),

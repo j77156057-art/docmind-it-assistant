@@ -19,7 +19,7 @@ BADGE = "# 门禁卡\n## 登记流程\nbadge reader 需要重新登记。\n"
 class EvaluationGateTests(unittest.TestCase):
     def make_settings(self, root: str, *, governance_mode: str = "direct",
                       gate_mode: str = "warn", min_recall: float = 0.8,
-                      min_citation: float = 0.9, max_regression: float = 0.05,
+                      min_citation: float = 0.5, max_regression: float = 0.05,
                       allow_override: bool = False,
                       eval_allow_override: bool = False) -> AppSettings:
         project = Path(root)

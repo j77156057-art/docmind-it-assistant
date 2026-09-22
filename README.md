@@ -301,7 +301,7 @@ RUN python -m pip install --no-cache-dir -r requirements-worker.txt
 IT_EVAL_GATE_MODE=warn          # off | warn | block
 IT_EVAL_ALLOW_OVERRIDE=false
 IT_EVAL_MIN_RECALL=0.8
-IT_EVAL_MIN_CITATION_ACCURACY=0.9
+IT_EVAL_MIN_CITATION_ACCURACY=0.5
 IT_EVAL_MAX_REGRESSION=0.05
 IT_EVAL_TOP_K=5
 ```

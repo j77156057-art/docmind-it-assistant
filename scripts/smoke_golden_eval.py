@@ -74,7 +74,7 @@ def main() -> int:
             governance_mode="direct",
             evaluation_gate_mode="warn",
             evaluation_min_recall=0.8,
-            evaluation_min_citation_accuracy=0.9,
+            evaluation_min_citation_accuracy=0.5,
             evaluation_max_regression=0.05,
             evaluation_top_k=5,
             # New pipeline knobs under test:

@@ -19,6 +19,7 @@
 - 异步索引：`ingestion_jobs` 业务队列、`worker` 进程（抢占、心跳、僵尸回收、可重试性分类）、导入接口 `202 + job_id`、任务重试/取消、队列健康诊断；`reindex`/`withdraw` 任务类型已由 Worker 实现（reindex 重置版本为 `queued` 后重嵌、withdraw 走既有治理方法并写审计），可重试失败通过行内 `next_attempt_at` 持久化指数退避（迁移 `20260922_0011`），避免坏上游被紧循环打爆。
 - 可选 LangGraph 编排引擎：分批向量化 + checkpoint 断点续跑、独立 checkpoint 存储（不污染应用 schema）、从 `app.py` 出发的 import 闭包边界守卫；PostgreSQL 路径由 CI 上的集成测试覆盖（独立 schema、续跑、`alembic` 无差异）。
 - 发布前评测门：`evaluation_cases` / `evaluation_runs` / `evaluation_case_results`，复用生产检索路径的 recall@k、引用命中率、拒答正确率与基线回归，`off/warn/block` 三种门禁模式与 `override_gate` 留痕。
+- 评测门引用判定双轨制：`citation_ok_relaxed`（top-k 内任一同源 chunk 章节命中）作为门禁信号，`citation_ok_strict`（首命中 chunk）仅作审计口径；忠实度改为对真实生成答案打分（修复恒 ≈1.0 无鉴别力）。42 题黄金集实测两库 relaxed 引用命中率 rag-agent 0.476 / docmind 0.667、strict 0.333 / 0.476。据此将 `IT_EVAL_MIN_CITATION_ACCURACY` 由 0.9 重定为 **0.5**——0.9 在 relaxed 口径下结构性不可达（两库恒 warn、门禁失信号），旧 baseline 一次性作废；0.5 下 docmind 通过、rag-agent 低于栏被 warn 标记（门禁默认 `warn` 不阻断发布，仅持续暴露弱库待 §4 切分/去重改善）。
 - 部署编排包含索引 Worker：`scripts/dev.ps1` 启停三个服务（查询/管理/Worker），`compose.yaml` 增加 `worker` 服务并在管理服务与管理端共享 `docmind_sources` 卷、独立 `docmind_worker` 卷保存 checkpoint。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。

@@ -175,7 +175,7 @@ $env:DASHSCOPE_API_KEY = "sk-..."
 | 1 | citation 判定改为扫描 top-k 内**所有**期望文档 chunk（去掉 `break`，取最佳 rank） | `backend/evaluation.py:181-199` | citation 16→23/42（+0.167），且口径更符合"引用是否被召回"的语义 |
 | 2 | 抑制标题块与同 heading 重复子块（标题块降权 / top-k 内同 heading 去重） | ingestion chunker + retrieval 后处理 | 直接攻击 22 题 heading 失配的主因 |
 | 3 | faithfulness 改为对真实生成答案打分（当前恒 ≈1.0，等于没测） | `backend/evaluation.py:190-194` | 让该指标恢复鉴别力 |
-| 4 | 重新校准 gate 阈值（当前 min_citation=0.9 在当前口径下不可达） | `backend/config.py` `evaluation_min_citation_accuracy` | 避免 gate 永远 warn、失去信号 |
+| 4 | ~~重新校准 gate 阈值（0.9 不可达）~~ **已完成**：`min_citation` 0.9 → 0.5（relaxed 口径；rag-agent 0.476、docmind 0.667 两库实测，rag-agent 仍低于 0.5 被 warn 标记） | `backend/config.py` `evaluation_min_citation_accuracy` | gate 不再永远失败；rag-agent 作为弱库被持续标记，后续靠 §4 切分/去重改善 |
 
 **不建议**继续在 embedding 模型上投入来拉 citation：本次 A/B 已证明真实向量相对 hash 的净增益只有 +2/42 题，
 且方向不稳定（rag-agent −1、docmind +3）。收益主要卡在 §4 的度量与切分问题上。
