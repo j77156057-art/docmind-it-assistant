@@ -1225,6 +1225,8 @@ class QueryDatabase:
             "recall_at_k": ratio(row.recall_at_k),
             "citation_accuracy": ratio(row.citation_accuracy),
             "refusal_accuracy": ratio(row.refusal_accuracy),
+            "faithfulness": ratio(row.faithfulness),
+            "faithfulness_coverage": ratio(row.faithfulness_coverage),
             "baseline_run_id": row.baseline_run_id,
             "created_by_subject_id": row.created_by_subject_id,
             "request_id": row.request_id,
@@ -1337,6 +1339,8 @@ class QueryDatabase:
             row.recall_at_k = metrics.get("recall_at_k")
             row.citation_accuracy = metrics.get("citation_accuracy")
             row.refusal_accuracy = metrics.get("refusal_accuracy")
+            row.faithfulness = metrics.get("faithfulness")
+            row.faithfulness_coverage = metrics.get("faithfulness_coverage")
             row.gate_result = gate_result
             row.gate_reason = (gate_reason or "")[:512]
             row.baseline_run_id = int(baseline_run_id) if baseline_run_id else None

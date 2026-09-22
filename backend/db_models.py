@@ -338,6 +338,8 @@ class EvaluationRunRecord(Base):
     recall_at_k: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     citation_accuracy: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     refusal_accuracy: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    faithfulness: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
+    faithfulness_coverage: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     baseline_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("evaluation_runs.id", ondelete="SET NULL"), nullable=True,
     )
