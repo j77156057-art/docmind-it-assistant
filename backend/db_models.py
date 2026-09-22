@@ -435,3 +435,196 @@ class AuditEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True,
     )
+
+
+# --- 采购硬缺口信号（引用 / 反馈 / 知识缺口 / 组织模型），见 docs/architecture-procurement-gaps.md ---
+# 词汇集中声明，CHECK 约束复用 `_in_clause` 生成，保证应用层与数据库约束一致。
+FEEDBACK_RATING = ("positive", "negative")
+GAP_TYPES = ("insufficient_evidence",)  # "low_confidence" 预留给 P1-1，本轮不进 CHECK
+GAP_STATUS = ("open", "addressed", "dismissed")
+ORG_STATUS = ("active", "inactive")     # 仅 users.status 使用
+
+
+class QueryCitationRecord(Base):
+    """Persisted answer citation. First-class storage of what was previously only in the answer JSON.
+
+    `query_id` cascades with the parent query (PostgreSQL); on SQLite the project's explicit-purge
+    convention applies. `document_chunk_id` / `document_version_id` are best-effort resolved FKs kept
+    for statistics only — they are SET NULL if the referenced row vanishes, so a citation never breaks
+    because a chunk was purged.
+    """
+
+    __tablename__ = "query_citations"
+    __table_args__ = (
+        CheckConstraint(
+            _in_clause("citation_kind", ("chunk", "knowledge")),
+            name="ck_query_citations_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    query_id: Mapped[int] = mapped_column(
+        ForeignKey("queries.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    citation_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    document_chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_chunks.id", ondelete="SET NULL"), nullable=True,
+    )
+    document_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True,
+    )
+    source: Mapped[str] = mapped_column(String(512), nullable=False)
+    section: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    line_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chunk_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+    citation_rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class QueryFeedbackRecord(Base):
+    """User thumbs-up / thumbs-down on an answer. Idempotent per (query_id, actor_subject_id)."""
+
+    __tablename__ = "query_feedback"
+    __table_args__ = (
+        CheckConstraint(_in_clause("rating", FEEDBACK_RATING), name="ck_query_feedback_rating"),
+        UniqueConstraint("query_id", "actor_subject_id", name="uq_query_feedback_query_actor"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    query_id: Mapped[int] = mapped_column(
+        ForeignKey("queries.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    actor_subject_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    rating: Mapped[str] = mapped_column(String(16), nullable=False)
+    comment: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class KnowledgeGapRecord(Base):
+    """Auto-registered 'no evidence' query. Weak reference to the source query (SET NULL on delete).
+
+    `gap_summary` is a non-PII operational template — the field-encrypted `queries.question` is NEVER
+    copied here (see docs/architecture-procurement-gaps.md §8.5 加密红线).
+    """
+
+    __tablename__ = "knowledge_gaps"
+    __table_args__ = (
+        CheckConstraint(_in_clause("gap_type", GAP_TYPES), name="ck_knowledge_gaps_type"),
+        CheckConstraint(_in_clause("status", GAP_STATUS), name="ck_knowledge_gaps_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    query_id: Mapped[int | None] = mapped_column(
+        ForeignKey("queries.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    gap_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    gap_summary: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    model_route: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    resolved_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class UserRecord(Base):
+    """Org user. `subject_id` is the HMAC hash, isomorphic to `document_acl.principal_id` (user type).
+
+    Reuses the existing ACL key space, so no migration of `document_acl` rows is required.
+    """
+
+    __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(_in_clause("status", ORG_STATUS), name="ck_users_status"),
+    )
+
+    subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    email: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class GroupRecord(Base):
+    """Org group. `group_key` is the claim string, isomorphic to `document_acl.principal_id` (group)."""
+
+    __tablename__ = "groups"
+
+    group_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class UserGroupMembershipRecord(Base):
+    """Login-time lazy sync of group membership. Cascade-removed with its user or group."""
+
+    __tablename__ = "user_group_memberships"
+
+    subject_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.subject_id", ondelete="CASCADE"), nullable=False,
+        primary_key=True,
+    )
+    group_key: Mapped[str] = mapped_column(
+        String(256), ForeignKey("groups.group_key", ondelete="CASCADE"), nullable=False,
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class DepartmentRecord(Base):
+    """Org department metadata. Pure metadata — never enters ACL execution this round.
+
+    `parent_key` self-references `department_key`; `use_alter=True` defers the FK so the table can be
+    created before its own row exists. Orphans are allowed (parent SET NULL).
+    """
+
+    __tablename__ = "departments"
+
+    department_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    parent_key: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("departments.department_key", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+
+
+class UserDepartmentRecord(Base):
+    """User→department metadata link. Not used for ACL enforcement this round."""
+
+    __tablename__ = "user_department"
+
+    subject_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.subject_id", ondelete="CASCADE"), nullable=False,
+        primary_key=True,
+    )
+    department_key: Mapped[str] = mapped_column(
+        String(64), ForeignKey("departments.department_key", ondelete="CASCADE"), nullable=False,
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )

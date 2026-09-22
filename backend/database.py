@@ -20,16 +20,18 @@ from sqlalchemy.pool import NullPool
 
 from .db_models import (
     ACTIVE_JOB_STATUSES, IN_FLIGHT_STATUSES, JOB_STATUSES, AuditEventRecord, Base,
-    DocumentAclRecord, DocumentChunkRecord, DocumentRecord, DocumentVersionRecord,
-    DocumentVersionReviewRecord, EvaluationCaseRecord, EvaluationCaseResultRecord,
-    EvaluationRunRecord, IngestionJobRecord, ModelUsageRecord, QueryRecord,
-    RuntimeModelConfigRecord, RuntimeProviderCredentialRecord,
+    DepartmentRecord, DocumentAclRecord, DocumentChunkRecord, DocumentRecord,
+    DocumentVersionRecord, DocumentVersionReviewRecord, EvaluationCaseRecord,
+    EvaluationCaseResultRecord, EvaluationRunRecord, FEEDBACK_RATING, GAP_STATUS, GAP_TYPES,
+    GroupRecord, IngestionJobRecord, KnowledgeGapRecord, ModelUsageRecord, ORG_STATUS, QueryRecord,
+    QueryCitationRecord, QueryFeedbackRecord, RuntimeModelConfigRecord,
+    RuntimeProviderCredentialRecord, UserDepartmentRecord, UserGroupMembershipRecord, UserRecord,
 )
 from cryptography.fernet import Fernet, InvalidToken
 from .crypto import FieldEncryptor
 from .auth import (
-    CLASSIFICATION_RANK, CONFIDENTIAL, INTERNAL, OPEN_CLASSIFICATIONS, is_open_classification,
-    normalize_classification,
+    CLASSIFICATION_RANK, CONFIDENTIAL, INTERNAL, OPEN_CLASSIFICATIONS, Principal,
+    is_open_classification, normalize_classification,
 )
 from .pricing import cost_cny, pricing_status
 from .text_index import lexical_text, lexical_terms
@@ -138,6 +140,10 @@ class QueryDatabase:
                 EvaluationCaseResultRecord.__tablename__,
                 AuditEventRecord.__tablename__, RuntimeModelConfigRecord.__tablename__,
                 RuntimeProviderCredentialRecord.__tablename__,
+                QueryCitationRecord.__tablename__, QueryFeedbackRecord.__tablename__,
+                KnowledgeGapRecord.__tablename__, UserRecord.__tablename__,
+                GroupRecord.__tablename__, UserGroupMembershipRecord.__tablename__,
+                DepartmentRecord.__tablename__, UserDepartmentRecord.__tablename__,
             }
             if not required.issubset(tables):
                 return False, "database_schema_missing"
@@ -1951,6 +1957,379 @@ class QueryDatabase:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    # --- 采购硬缺口信号（引用 / 反馈 / 知识缺口 / 组织模型）-----------------------------------
+
+    def record_citations(self, query_id: int, citations: list[dict]) -> None:
+        """Persist the answer's citations. Best-effort resolve chunk/version FKs; never fatal.
+
+        `citations` carry two shapes (chunk → document_chunks, knowledge → knowledge.md). The chunk
+        FKs are resolved against (document title, version, ordinal) so statistics survive even when
+        the denormalized text is the only thing we keep. A resolution miss leaves the FK NULL.
+        """
+        if not citations:
+            return
+        rows: list[QueryCitationRecord] = []
+        with self._sessions.begin() as session:
+            for index, citation in enumerate(citations or [], 1):
+                citation = citation or {}
+                is_chunk = "chunk" in citation and "line" not in citation
+                citation_kind = "chunk" if is_chunk else "knowledge"
+                source = str(citation.get("source") or "")
+                section = str(citation.get("section") or "")
+                document_chunk_id = None
+                document_version_id = None
+                page_number = None
+                line_number = None
+                chunk_ordinal = None
+                score = None
+                if citation_kind == "chunk":
+                    version_number = citation.get("version")
+                    raw_chunk = citation.get("chunk")
+                    ordinal = None
+                    if isinstance(raw_chunk, int):
+                        ordinal = raw_chunk - 1
+                        chunk_ordinal = ordinal
+                    page_number = citation.get("page")
+                    score = citation.get("score")
+                    # Best-effort: resolve the referenced published chunk for statistics only.
+                    if source and version_number is not None:
+                        version_row = session.scalar(
+                            select(DocumentVersionRecord)
+                            .join(
+                                DocumentRecord,
+                                DocumentRecord.id == DocumentVersionRecord.document_id,
+                            )
+                            .where(
+                                DocumentRecord.title == source,
+                                DocumentVersionRecord.version == int(version_number),
+                            )
+                        )
+                        if version_row is not None:
+                            document_version_id = version_row.id
+                            if ordinal is not None:
+                                chunk_row = session.scalar(
+                                    select(DocumentChunkRecord).where(
+                                        DocumentChunkRecord.document_version_id == version_row.id,
+                                        DocumentChunkRecord.ordinal == ordinal,
+                                    )
+                                )
+                                if chunk_row is not None:
+                                    document_chunk_id = chunk_row.id
+                else:
+                    line_number = citation.get("line")
+                rows.append(QueryCitationRecord(
+                    query_id=int(query_id),
+                    citation_kind=citation_kind,
+                    document_chunk_id=document_chunk_id,
+                    document_version_id=document_version_id,
+                    source=source[:512],
+                    section=section[:512],
+                    page_number=int(page_number) if isinstance(page_number, int) else None,
+                    line_number=int(line_number) if isinstance(line_number, int) else None,
+                    chunk_ordinal=chunk_ordinal,
+                    score=Decimal(str(score)) if isinstance(score, (int, float)) else None,
+                    citation_rank=index,
+                ))
+            if rows:
+                session.add_all(rows)
+
+    def record_feedback(self, query_id: int, actor_subject_id: str, rating: str, comment: str) -> None:
+        """Idempotent upsert of a user's rating for a query (one row per (query, actor)).
+
+        Reuses the "session.get then update/insert" pattern (cf. set_runtime_model_config) so the
+        write works identically on SQLite and PostgreSQL without dialect-specific upsert syntax.
+        """
+        if rating not in FEEDBACK_RATING:
+            raise ValueError("反馈评分无效")
+        actor_subject_id = (actor_subject_id or "")[:64]
+        comment = (comment or "")[:1000]
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            row = session.scalar(
+                select(QueryFeedbackRecord).where(
+                    QueryFeedbackRecord.query_id == int(query_id),
+                    QueryFeedbackRecord.actor_subject_id == actor_subject_id,
+                )
+            )
+            if row is None:
+                row = QueryFeedbackRecord(query_id=int(query_id), actor_subject_id=actor_subject_id)
+                session.add(row)
+            row.rating = rating[:16]
+            row.comment = comment
+            row.updated_at = now
+
+    def register_knowledge_gap(self, query_id: int, gap_type: str, model_route: str,
+                              gap_summary: str = "") -> int:
+        """Register an 'insufficient evidence' gap. Returns the new gap id.
+
+        `gap_summary` defaults to a non-PII operational template; `queries.question` is NEVER copied
+        here (field-encrypted, see docs/architecture-procurement-gaps.md §8.5).
+        """
+        if gap_type not in GAP_TYPES:
+            raise ValueError("知识缺口类型无效")
+        now = datetime.now(timezone.utc)
+        summary = (gap_summary or "").strip() or f"自动登记：{gap_type}，路由 {model_route}"
+        with self._sessions.begin() as session:
+            row = KnowledgeGapRecord(
+                query_id=int(query_id),
+                gap_type=gap_type[:32],
+                gap_summary=summary[:1000],
+                model_route=(model_route or "")[:32],
+                status="open",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            session.flush()
+            new_id = int(row.id)
+        return new_id
+
+    def resolve_knowledge_gap(self, gap_id: int, resolved_version_id: int,
+                             actor_subject_id: str, request_id: str) -> None:
+        """Mark a gap addressed and link the version that closed it. Self-audited."""
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            row = session.get(KnowledgeGapRecord, int(gap_id))
+            if row is None:
+                raise ValueError("知识缺口不存在")
+            row.status = "addressed"
+            row.resolved_version_id = int(resolved_version_id)
+            row.updated_at = now
+            session.add(AuditEventRecord(
+                actor_subject_id=(actor_subject_id or "")[:64],
+                action="knowledge_gap.resolve",
+                target_type="knowledge_gap",
+                target_ref=str(gap_id)[:512],
+                result="success",
+                request_id=(request_id or "")[:128],
+            ))
+
+    def dismiss_knowledge_gap(self, gap_id: int, actor_subject_id: str, request_id: str) -> None:
+        """Mark a gap dismissed. Self-audited."""
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            row = session.get(KnowledgeGapRecord, int(gap_id))
+            if row is None:
+                raise ValueError("知识缺口不存在")
+            row.status = "dismissed"
+            row.updated_at = now
+            session.add(AuditEventRecord(
+                actor_subject_id=(actor_subject_id or "")[:64],
+                action="knowledge_gap.dismiss",
+                target_type="knowledge_gap",
+                target_ref=str(gap_id)[:512],
+                result="success",
+                request_id=(request_id or "")[:128],
+            ))
+
+    def citations(self, query_id: int | None = None, start=None, end=None,
+                  limit: int = 200) -> list[dict]:
+        count = max(1, min(int(limit), 5000))
+        statement = select(QueryCitationRecord)
+        if query_id is not None:
+            statement = statement.where(QueryCitationRecord.query_id == int(query_id))
+        if start is not None:
+            statement = statement.where(QueryCitationRecord.created_at >= self._normalize_dt(start))
+        if end is not None:
+            statement = statement.where(QueryCitationRecord.created_at <= self._normalize_dt(end))
+        statement = statement.order_by(QueryCitationRecord.id.asc()).limit(count)
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._citation_public(row) for row in rows]
+
+    def citations_export(self, *, start=None, end=None, query_id=None,
+                         limit: int = 2000) -> list[dict]:
+        return self.citations(query_id=query_id, start=start, end=end, limit=limit)
+
+    @staticmethod
+    def _citation_public(row: QueryCitationRecord) -> dict:
+        return {
+            "id": row.id,
+            "query_id": row.query_id,
+            "citation_kind": row.citation_kind,
+            "document_chunk_id": row.document_chunk_id,
+            "document_version_id": row.document_version_id,
+            "source": row.source,
+            "section": row.section,
+            "page_number": row.page_number,
+            "line_number": row.line_number,
+            "score": float(row.score) if row.score is not None else None,
+            "citation_rank": row.citation_rank,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+
+    def feedback(self, rating: str | None = None, actor: str | None = None,
+                 limit: int = 200) -> list[dict]:
+        count = max(1, min(int(limit), 5000))
+        statement = select(QueryFeedbackRecord)
+        if rating:
+            statement = statement.where(QueryFeedbackRecord.rating == rating[:16])
+        if actor:
+            statement = statement.where(QueryFeedbackRecord.actor_subject_id == actor[:64])
+        statement = statement.order_by(QueryFeedbackRecord.id.asc()).limit(count)
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._feedback_public(row) for row in rows]
+
+    def feedback_export(self, *, rating=None, actor=None, limit: int = 2000) -> list[dict]:
+        return self.feedback(rating=rating, actor=actor, limit=limit)
+
+    @staticmethod
+    def _feedback_public(row: QueryFeedbackRecord) -> dict:
+        return {
+            "id": row.id,
+            "query_id": row.query_id,
+            "actor_subject_id": row.actor_subject_id,
+            "rating": row.rating,
+            "comment": row.comment,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    def knowledge_gaps(self, gap_type: str | None = None, status: str | None = None,
+                       limit: int = 200) -> list[dict]:
+        count = max(1, min(int(limit), 5000))
+        statement = select(KnowledgeGapRecord)
+        if gap_type:
+            statement = statement.where(KnowledgeGapRecord.gap_type == gap_type[:32])
+        if status:
+            statement = statement.where(KnowledgeGapRecord.status == status[:16])
+        statement = statement.order_by(KnowledgeGapRecord.id.asc()).limit(count)
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [self._knowledge_gap_public(row) for row in rows]
+
+    def knowledge_gaps_export(self, *, gap_type=None, status=None, limit: int = 2000) -> list[dict]:
+        return self.knowledge_gaps(gap_type=gap_type, status=status, limit=limit)
+
+    @staticmethod
+    def _knowledge_gap_public(row: KnowledgeGapRecord) -> dict:
+        return {
+            "id": row.id,
+            "query_id": row.query_id,
+            "gap_type": row.gap_type,
+            "gap_summary": row.gap_summary,
+            "model_route": row.model_route,
+            "status": row.status,
+            "resolved_version_id": row.resolved_version_id,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    def org_users(self, limit: int = 500) -> list[dict]:
+        count = max(1, min(int(limit), 2000))
+        department_key = (
+            select(UserDepartmentRecord.department_key)
+            .where(UserDepartmentRecord.subject_id == UserRecord.subject_id)
+            .order_by(UserDepartmentRecord.created_at.asc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        statement = (
+            select(UserRecord, department_key.label("department_key"))
+            .order_by(UserRecord.subject_id.asc())
+            .limit(count)
+        )
+        with self._sessions() as session:
+            rows = session.execute(statement).all()
+        result = []
+        for user, dept_key in rows:
+            result.append({
+                "subject_id": user.subject_id,
+                "display_name": user.display_name,
+                "email": user.email,
+                "status": user.status,
+                "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+                "department_key": dept_key,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+            })
+        return result
+
+    def org_users_export(self, *, limit: int = 2000) -> list[dict]:
+        return self.org_users(limit=limit)
+
+    def org_groups(self, limit: int = 500) -> list[dict]:
+        count = max(1, min(int(limit), 2000))
+        member_count = (
+            select(func.count())
+            .select_from(UserGroupMembershipRecord)
+            .where(UserGroupMembershipRecord.group_key == GroupRecord.group_key)
+            .scalar_subquery()
+        )
+        statement = (
+            select(GroupRecord, member_count.label("member_count"))
+            .order_by(GroupRecord.group_key.asc())
+            .limit(count)
+        )
+        with self._sessions() as session:
+            rows = session.execute(statement).all()
+        result = []
+        for group, cnt in rows:
+            result.append({
+                "group_key": group.group_key,
+                "display_name": group.display_name,
+                "member_count": int(cnt or 0),
+                "created_at": group.created_at.isoformat() if group.created_at else None,
+            })
+        return result
+
+    def org_groups_export(self, *, limit: int = 2000) -> list[dict]:
+        return self.org_groups(limit=limit)
+
+    def org_departments(self, limit: int = 500) -> list[dict]:
+        count = max(1, min(int(limit), 2000))
+        statement = (
+            select(DepartmentRecord).order_by(DepartmentRecord.department_key.asc()).limit(count)
+        )
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [{
+            "department_key": row.department_key,
+            "name": row.name,
+            "parent_key": row.parent_key,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        } for row in rows]
+
+    def org_departments_export(self, *, limit: int = 2000) -> list[dict]:
+        return self.org_departments(limit=limit)
+
+    def sync_org_on_login(self, principal: Principal) -> None:
+        """Idempotent org sync on OIDC login: upsert user, groups and memberships.
+
+        `principal` carries the HMAC `subject_id`, `display_name` and `groups`. Called best-effort on
+        every successful login; a failure must never break the login itself.
+        """
+        subject_id = (principal.subject_id or "")[:64]
+        display_name = (principal.display_name or "")[:128]
+        now = datetime.now(timezone.utc)
+        with self._sessions.begin() as session:
+            user = session.get(UserRecord, subject_id)
+            if user is None:
+                user = UserRecord(
+                    subject_id=subject_id, display_name=display_name,
+                    status="active", last_seen_at=now, created_at=now,
+                )
+                session.add(user)
+            else:
+                user.display_name = display_name
+                user.last_seen_at = now
+                if not user.status:
+                    user.status = "active"
+            for group_key in sorted(principal.groups or set()):
+                gk = group_key[:256]
+                group = session.get(GroupRecord, gk)
+                if group is None:
+                    group = GroupRecord(group_key=gk, display_name=gk, created_at=now)
+                    session.add(group)
+                membership = session.get(
+                    UserGroupMembershipRecord,
+                    {"subject_id": subject_id, "group_key": gk},
+                )
+                if membership is None:
+                    session.add(UserGroupMembershipRecord(
+                        subject_id=subject_id, group_key=gk, created_at=now,
+                    ))
 
     # --- Document retention (Phase 4, A-4): 先软后硬 ---------------------------------
     # `expired_at` is NULL while a document is inside its retention window. When the window elapses
