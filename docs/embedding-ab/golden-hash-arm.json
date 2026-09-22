@@ -1,0 +1,372 @@
+[
+  {
+    "repo": "rag-agent",
+    "run_id": 1,
+    "status": "succeeded",
+    "gate_result": "warn",
+    "gate_reason": "引用命中率 0.333 < 0.900",
+    "total_cases": 21,
+    "passed_cases": 7,
+    "failed_cases": 14,
+    "recall_at_k": 1.0,
+    "citation_accuracy": 0.3333,
+    "refusal_accuracy": null,
+    "faithfulness": 0.9932,
+    "faithfulness_coverage": 1.0,
+    "per_case": [
+      {
+        "case_key": "ra-01",
+        "retrieved": true,
+        "rank": 5,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-02",
+        "retrieved": true,
+        "rank": 3,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-03",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-04",
+        "retrieved": true,
+        "rank": 2,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-05",
+        "retrieved": true,
+        "rank": 2,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-06",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-07",
+        "retrieved": true,
+        "rank": 3,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-08",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-09",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-10",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-11",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-12",
+        "retrieved": true,
+        "rank": 3,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-13",
+        "retrieved": true,
+        "rank": 5,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-14",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-15",
+        "retrieved": true,
+        "rank": 3,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-16",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-17",
+        "retrieved": true,
+        "rank": 3,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-18",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-19",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "ra-20",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 0.8571
+      },
+      {
+        "case_key": "ra-21",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      }
+    ]
+  },
+  {
+    "repo": "docmind-it-assistant",
+    "run_id": 1,
+    "status": "succeeded",
+    "gate_result": "warn",
+    "gate_reason": "引用命中率 0.429 < 0.900",
+    "total_cases": 21,
+    "passed_cases": 9,
+    "failed_cases": 12,
+    "recall_at_k": 0.8095,
+    "citation_accuracy": 0.4286,
+    "refusal_accuracy": null,
+    "faithfulness": 1.0,
+    "faithfulness_coverage": 1.0,
+    "per_case": [
+      {
+        "case_key": "dm-01",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-02",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-03",
+        "retrieved": true,
+        "rank": 3,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-04",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-05",
+        "retrieved": true,
+        "rank": 2,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-06",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-07",
+        "retrieved": false,
+        "rank": null,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-08",
+        "retrieved": false,
+        "rank": null,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-09",
+        "retrieved": false,
+        "rank": null,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-10",
+        "retrieved": false,
+        "rank": null,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-11",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-12",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-13",
+        "retrieved": true,
+        "rank": 2,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-14",
+        "retrieved": true,
+        "rank": 2,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-15",
+        "retrieved": true,
+        "rank": 2,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-16",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-17",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-18",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-19",
+        "retrieved": true,
+        "rank": 1,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-20",
+        "retrieved": true,
+        "rank": 4,
+        "citation_ok": true,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      },
+      {
+        "case_key": "dm-21",
+        "retrieved": true,
+        "rank": 5,
+        "citation_ok": false,
+        "refusal_ok": null,
+        "faithfulness": 1.0
+      }
+    ]
+  }
+]

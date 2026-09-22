@@ -4,3 +4,8 @@ httpx==0.28.1
 # PostgreSQL through psycopg, which is pure Python and needs libpq at runtime; the binary extra
 # bundles it so a fresh CI runner or a clean developer machine needs no system package.
 psycopg[binary]==3.3.6
+# Test runner. The suite is a mix of unittest.TestCase classes and pytest-style modules;
+# `unittest discover` only collects the former, so 24 pytest-style tests (field encryption,
+# rate limiting, reranking) silently never ran locally or in CI. pytest collects both, so it
+# is now the single declared runner everywhere: CI, README and PROJECT_STATUS.
+pytest==9.1.1

@@ -431,7 +431,7 @@ DETAIL:  Could not open extension control file "/usr/share/postgresql/16/extensi
 ## 测试与安全检查
 
 ```powershell
-.venv\Scripts\python -B -m unittest discover -s tests -v
+.venv\Scripts\python -B -m pytest -q -rs -p no:cacheprovider tests
 node --check web/admin.js
 .venv\Scripts\python -m pip check
 ```
@@ -448,7 +448,7 @@ node --check web/admin.js
 - 发布前评测在发布请求内**同步整跑**黄金题：题集很大时发布会变慢，`evaluate` 任务类型虽已声明但尚未实现异步评测。
 - 办公产物保存在本地目录，尚未接入对象存储、保留策略和审批发布。
 - Web 前端已实现 OIDC Authorization Code + PKCE 浏览器登录：`/api/auth/oidc/start` 发起授权、`/api/auth/oidc/callback` 换码并发放会话 Cookie；端点默认走 `<issuer>/.well-known/openid-configuration` 自动发现，可用 `IT_OIDC_*_ENDPOINT` 覆盖。真实身份提供商的联调仍需部署方配置（本仓库仅用 stub IdP 覆盖单测分支，端到端联调见 `tests/test_oidc_login.py` 注释）。
-- 尚无检索重排（后续批次）。
+- 检索重排已上线并默认开启（`rerank_enabled`，`rerank_mode=lexical`），但只对父子分块（`chunk_child_max_chars`，默认 400）生效；`api` 模式需要外部重排服务，本仓库未内置。
 - 尚未在本仓库中提供 Kubernetes、云网络策略、备份恢复和可观测性部署清单。
 - 外部模型与真实身份提供商需要部署方自行配置和联调。
 
@@ -462,6 +462,7 @@ node --check web/admin.js
 - [隔离边界](docs/isolation-boundary.md)
 - [文档导入与检索](docs/document-ingestion.md)
 - [实施路线图](docs/implementation-roadmap.md)
+- [Embedding A/B 评测证据](docs/embedding-ab/README.md)（2026-09-22，42 题黄金集 hash vs qwen）
 
 ## License
 

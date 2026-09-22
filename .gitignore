@@ -4,5 +4,10 @@ __pycache__/
 .env
 data/
 tmp/
+# Scratch artifacts written to the repo root by one-off probes and eval runs. Note that `tmp/`
+# only matches a *directory*; it never matched root-level `tmp_xxx` files, which is why the
+# working tree kept accumulating untracked noise.
+tmp_*
+scripts/tmp_*
 .workbuddy/
 

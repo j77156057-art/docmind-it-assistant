@@ -1,0 +1,68 @@
+===== rag-agent =====
+  ra-01   HEADING_MISS  rank=5 exp_head=[agent 运行时] got_head=[🖥️ 桌面端（原生窗口一键启动）]
+      top5: ra-integrations:它是什么 | ra-demo:DocMind 演示说明（Demo Guide） | ra-roadmap:2. 项目分离 | ra-product:DocMind 智能文档助手 · 产品说明（示例知识库） | ra-readme:🖥️ 桌面端（原生窗口一键启动）
+  ra-02   CITED         rank=3 exp_head=[落地场景] got_head=[落地场景：本地工程工作台]
+  ra-03   HEADING_MISS  rank=1 exp_head=[技术栈] got_head=[不依赖前端直接调 API]
+      top5: ra-readme:不依赖前端直接调 API | ra-integrations:它是什么 | ra-demo:DocMind 演示说明（Demo Guide） | ra-product:DocMind 智能文档助手 · 产品说明（示例知识库） | ra-readme:🧱 技术栈  <-- also at rank 5
+  ra-04   CITED         rank=2 exp_head=[桌面端] got_head=[🖥️ 桌面端（原生窗口一键启动）]
+  ra-05   HEADING_MISS  rank=2 exp_head=[harness 能力] got_head=[不依赖前端直接调 API]
+      top5: ra-demo:问答（RAG 页，multipart 字段是 quest | ra-readme:不依赖前端直接调 API | ra-capability:DocMind 能力边界对照表 | ra-product:常见问题 | ra-capability:2. 能力边界对照表（核心）
+  ra-06   CITED         rank=1 exp_head=[方式 a] got_head=[方式 A：零配置（mock 模式，无需任何 key）]
+  ra-07   HEADING_MISS  rank=3 exp_head=[命令行] got_head=[DocMind 演示说明（Demo Guide）]
+      top5: ra-product:DocMind 智能文档助手 · 产品说明（示例知识库） | ra-integrations:它是什么 | ra-demo:DocMind 演示说明（Demo Guide） | ra-demo:DASHSCOPE_API_KEY=你的key | ra-demo:问答（RAG 页，multipart 字段是 quest
+  ra-08   HEADING_MISS  rank=1 exp_head=[react 推理流程] got_head=[DocMind 演示说明（Demo Guide）]
+      top5: ra-demo:DocMind 演示说明（Demo Guide） | ra-integrations:它是什么 | ra-readme:🖥️ 桌面端（原生窗口一键启动） | ra-demo:2.1 问答页（`/`） | ra-readme:打包模式（演示 / 交付）：先构建，再双击 启动DocM
+  ra-09   HEADING_MISS  rank=1 exp_head=[工作台] got_head=[问答（RAG 页，multipart 字段是 question）]
+      top5: ra-demo:问答（RAG 页，multipart 字段是 quest | ra-readme:不依赖前端直接调 API | ra-integrations:它是什么 | ra-demo:方式 A：零配置（mock 模式，无需任何 key） | ra-demo:DocMind 演示说明（Demo Guide）
+  ra-10   CITED         rank=1 exp_head=[为什么要有边界] got_head=[1. 为什么要有边界（设计宪章回顾）]
+  ra-11   CITED         rank=1 exp_head=[能力边界对照表] got_head=[DocMind 能力边界对照表]
+  ra-12   HEADING_MISS  rank=3 exp_head=[明确不碰] got_head=[DocMind 能力边界对照表]
+      top5: ra-demo:问答（RAG 页，multipart 字段是 quest | ra-readme:不依赖前端直接调 API | ra-capability:DocMind 能力边界对照表 | ra-capability:2. 能力边界对照表（核心） | ra-capability:2. 能力边界对照表（核心）
+  ra-13   HEADING_MISS  rank=5 exp_head=[一句话定位] got_head=[DocMind 能力边界对照表]
+      top5: ra-demo:问答（RAG 页，multipart 字段是 quest | ra-readme:不依赖前端直接调 API | ra-product:DocMind 智能文档助手 · 产品说明（示例知识库） | ra-integrations:DocMind 集成文档：MCP 引擎桥 与 Web 试 | ra-capability:DocMind 能力边界对照表
+  ra-14   HEADING_MISS  rank=1 exp_head=[mcp 引擎桥] got_head=[它是什么]
+      top5: ra-integrations:它是什么 | ra-integrations:它是什么 | ra-integrations:3. 二者关系：何时用哪个 | ra-integrations:DocMind 集成文档：MCP 引擎桥 与 Web 试 | ra-integrations:它是什么  <-- also at rank 4
+  ra-15   CITED         rank=3 exp_head=[配置模型] got_head=[配置模型]
+  ra-16   HEADING_MISS  rank=1 exp_head=[godot web 试玩导出] got_head=[它是什么]
+      top5: ra-integrations:它是什么 | ra-readme:不执行这一步，打开 /workbench 会提示「工作台 | ra-integrations:DocMind 集成文档：MCP 引擎桥 与 Web 试 | ra-integrations:3. 二者关系：何时用哪个 | ra-integrations:已知边界 / 注意事项
+  ra-17   HEADING_MISS  rank=3 exp_head=[常见问题] got_head=[DocMind 智能文档助手 · 产品说明（示例知识库）]
+      top5: ra-readme:不依赖前端直接调 API | ra-demo:问答（RAG 页，multipart 字段是 quest | ra-product:DocMind 智能文档助手 · 产品说明（示例知识库） | ra-product:常见问题 | ra-product:计费与配额  <-- also at rank 4
+  ra-18   CITED         rank=1 exp_head=[计费与配额] got_head=[计费与配额]
+  ra-19   HEADING_MISS  rank=1 exp_head=[当前阶段] got_head=[Agent 双项目拆分记录]
+      top5: ra-roadmap:Agent 双项目拆分记录 | ra-demo:DocMind 演示说明（Demo Guide） | ra-integrations:它是什么 | ra-roadmap:2. 项目分离 | ra-readme:DocMind · 面向工程代码的 Agent 运行时（
+  ra-20   HEADING_MISS  rank=1 exp_head=[场景画布] got_head=[📁 目录结构]
+      top5: ra-readme:📁 目录结构 | ra-demo:2.2 工作台（`/workbench`） | ra-demo:DocMind 演示说明（Demo Guide） | ra-readme:落地场景：本地工程工作台 | ra-integrations:它是什么
+  ra-21   HEADING_MISS  rank=1 exp_head=[自检脚本] got_head=[问答（RAG 页，multipart 字段是 question）]
+      top5: ra-demo:问答（RAG 页，multipart 字段是 quest | ra-readme:不依赖前端直接调 API | ra-product:DocMind 智能文档助手 · 产品说明（示例知识库） | ra-roadmap:完成证据要求 | ra-capability:DocMind 能力边界对照表
+===== docmind-it-assistant =====
+  dm-01   HEADING_MISS  rank=1 exp_head=[核心能力] got_head=[SSO、RBAC 与 ACL]
+      top5: dm-readme:SSO、RBAC 与 ACL | dm-p2acl:调用方（最小改动） | dm-isolation:1. 目录与仓库 | dm-isolation:2. 允许迁移的能力 | dm-isolation:3. 禁止进入查询服务的能力
+  dm-02   HEADING_MISS  rank=1 exp_head=[架构] got_head=[界面预览]
+      top5: dm-readme:界面预览 | dm-readme:架构 | dm-ingestion:运行边界 | dm-readme:Docker 本地环境 | dm-readme:Docker 本地环境  <-- also at rank 2
+  dm-03   HEADING_MISS  rank=3 exp_head=[文档密级] got_head=[异步索引 Worker]
+      top5: dm-govmodel:8. 未决问题 | dm-p2acl:T10 · 文档同步 | dm-readme:异步索引 Worker | dm-readme:文档密级（classification） | dm-readme:文档密级（classification）  <-- also at rank 4
+  dm-04   HEADING_MISS  rank=1 exp_head=[知识治理] got_head=[项目文档]
+      top5: dm-readme:项目文档 | dm-readme:SSO、RBAC 与 ACL | dm-readme:知识治理：从"导入即发布"到审批发布 | dm-readme:知识治理：从"导入即发布"到审批发布 | dm-readme:知识治理：从"导入即发布"到审批发布  <-- also at rank 3
+  dm-05   HEADING_MISS  rank=2 exp_head=[评测门与黄金题] got_head=[SSO、RBAC 与 ACL]
+      top5: dm-govmodel:4.4 `evaluation_cases` | dm-readme:SSO、RBAC 与 ACL | dm-status:已完成 | dm-status:已完成 | dm-govmodel:5. 迁移批次
+  dm-06   HEADING_MISS  rank=1 exp_head=[模型与密钥] got_head=[SSO、RBAC 与 ACL]
+      top5: dm-readme:SSO、RBAC 与 ACL | dm-readme:SSO、RBAC 与 ACL | dm-ingestion:运行边界 | dm-readme:query.question 与 document_ch | dm-readme:query.question 与 document_ch
+  dm-07   MISS_DOC      rank=None exp_head=[已完成] got_head=[]
+  dm-08   MISS_DOC      rank=None exp_head=[安全边界] got_head=[]
+  dm-09   MISS_DOC      rank=None exp_head=[后续工作] got_head=[]
+  dm-10   MISS_DOC      rank=None exp_head=[vpn 连接失败] got_head=[]
+  dm-11   CITED         rank=1 exp_head=[账号锁定与密码] got_head=[账号锁定与密码]
+  dm-12   CITED         rank=1 exp_head=[软件安装] got_head=[软件安装]
+  dm-13   CITED         rank=2 exp_head=[支持格式与限制] got_head=[支持格式与限制]
+  dm-14   CITED         rank=2 exp_head=[知识治理（审批发布）] got_head=[知识治理（审批发布）]
+  dm-15   CITED         rank=2 exp_head=[embedding 配置] got_head=[Embedding 配置]
+  dm-16   HEADING_MISS  rank=1 exp_head=[用户已锁定的 4 项决策] got_head=[架构设计 + 任务分解：DocMind「P2 ACL 切换」（核心切换 + 部门进 ACL）]
+      top5: dm-p2acl:架构设计 + 任务分解：DocMind「P2 ACL 切 | dm-p2acl:1.2 用户已锁定的 4 项决策（硬约束） | dm-p2acl:1.1 与母体的继承关系 | dm-govmodel:6.3 唯一哈希约束与"驳回后重提"的冲突（必须处理） | dm-govmodel:6.2 审核预览需要新路径  <-- also at rank 2
+  dm-17   CITED         rank=1 exp_head=[为何不做法拉第三列外键] got_head=[5.1 为何不做法拉第三列外键]
+  dm-18   CITED         rank=1 exp_head=[迁移设计] got_head=[6. 迁移设计（`20260922_0015_document_acl_org_switch`）]
+  dm-19   CITED         rank=1 exp_head=[目录与仓库] got_head=[1. 目录与仓库]
+  dm-20   CITED         rank=4 exp_head=[禁止进入查询服务的能力] got_head=[3. 禁止进入查询服务的能力]
+  dm-21   HEADING_MISS  rank=5 exp_head=[运行隔离] got_head=[1. 目录与仓库]
+      top5: dm-readme:界面预览 | dm-readme:架构 | dm-ingestion:运行边界 | dm-readme:Docker 本地环境 | dm-isolation:1. 目录与仓库
+
+SUMMARY {"wrong_doc": 4, "heading_miss": 22, "heading_empty": 0, "cited": 16, "total": 42, "recoverable_in_topk": 7}

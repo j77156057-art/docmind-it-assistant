@@ -13,7 +13,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 minutes was too thin: a full pytest run measures ~9.5 minutes locally, and on CI the
+    # four PostgreSQL tests actually execute (instead of skipping), on top of image pull,
+    # service startup and dependency installation.
+    timeout-minutes: 25
 
     # The worker's LangGraph checkpointer behaves differently on PostgreSQL than on SQLite
     # (separate schema, psycopg connection). tests/test_indexing_graph_postgres.py exercises
@@ -48,12 +51,21 @@ jobs:
           node-version: "22"
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt -r requirements-worker.txt
+      # Fails the build if any tests/test_*.py contributes zero collected tests. Under the old
+      # `unittest discover` runner 24 pytest-style tests were collected by nobody and silently
+      # never ran; this step makes that class of gap impossible to reintroduce.
+      - name: Check test suite completeness
+        run: python -B scripts/check_suite_completeness.py
       - name: Run tests
         env:
           # The integration test creates and drops its own disposable database on this server,
           # so the role needs CREATEDB (the postgres image's superuser role has it).
           IT_TEST_POSTGRES_URL: postgresql+psycopg://docmind:change-me@127.0.0.1:5432/docmind_it
-        run: python -B -m unittest discover -s tests -v
+        # pytest (not `unittest discover`): the suite mixes unittest.TestCase with pytest-style
+        # modules, and unittest discover only collects the former — leaving 24 tests (field
+        # encryption, rate limiting, reranking) silently unexecuted. `-rs` prints skip reasons
+        # so a test that silently opts out is visible in the log instead of being invisible.
+        run: python -B -m pytest -q -rs -p no:cacheprovider tests
       - name: Check Python and JavaScript syntax
         run: |
           python -m compileall -q app.py admin_app.py assistant backend ingestion migrations tests worker
