@@ -226,6 +226,8 @@ IT_SLOW_REQUEST_MS=1000
 IT_SLOW_DB_MS=200
 # query.question 字段级加密密钥（Fernet）。生产必须配置；未配置则使用固定开发密钥并告警。
 IT_QUERY_FIELD_KEY=
+# 每用户每日查询配额（0 关闭）。超限返回 HTTP 429 + Retry-After 与 X-RateLimit-* 头。
+IT_QUERY_DAILY_QUOTA=1000
 ```
 
 ```powershell
@@ -319,6 +321,8 @@ IT_EVAL_TOP_K=5
 云端模式可直接在“系统状态 → 模型配置”填写供应商、模型和 API Key。系统会先发起一次真实的短请求验证连接，再把密钥用 `IT_AUTH_SUBJECT_SALT` 派生的密钥加密保存；页面和接口只返回“已配置”，不会回显明文。切勿随意更换 `IT_AUTH_SUBJECT_SALT`，否则已保存密钥将无法解密；生产环境更推荐将密钥放入部署平台的 Secret Manager 或环境变量。
 
 用户提问（`query.question`）按 `IT_QUERY_FIELD_KEY` 做字段级 AES 加密落库，读取时解密，密钥缺失时本地/测试使用固定开发密钥并告警。加密值带 `enc:v1:` 前缀，未带前缀的旧明文记录仍可正常读出（向后兼容，无需迁移）。`IT_QUERY_FIELD_KEY` 与 `IT_AUTH_SUBJECT_SALT` 一样属于密钥，生产环境必须配置且建议存入 Secret Manager；轮换密钥时需对存量记录做一次重加密。
+
+每个用户每日查询次数受 `IT_QUERY_DAILY_QUOTA`（默认 1000）限制，按 UTC 自然日重置；超限返回 `HTTP 429` 并带 `Retry-After`（距次日 UTC 零点秒数）与 `X-RateLimit-Limit`/`X-RateLimit-Remaining` 头。`development` 认证模式与匿名/空主体跳过限流（本地离线演示不受影响）。计数进程内维护、重启清零，适用于单实例部署。
 
 管理后台切换到本地模型时，会先执行一次真实的短请求：Ollama 会调用 `/api/generate` 将目标模型加载并确认它出现在 `/api/ps`；llama.cpp 会调用兼容的 `/chat/completions`。探活失败不会保存新配置，系统状态页会显示“服务不可达 / 模型未安装 / 尚未启动 / 已启动”。Ollama 可用 `ollama serve` 启动服务，llama.cpp 需先运行自己的 `llama-server`（默认 `127.0.0.1:8080`）。
 

@@ -45,6 +45,7 @@
 - 生成文件固定在专用目录，并拒绝路径穿越和电子表格公式注入。
 - 日志字段是白名单（标识符、枚举、计数、布尔），问题正文、回答正文与文档内容无法通过 `log_event` 的额外字段进入日志；白名单有专门测试固定。
 - 字段级加密（A-4）：`query.question` 按 `IT_QUERY_FIELD_KEY` 用 Fernet（AES-128-CBC + HMAC-SHA256）加密落库，写入前加密、读出按需解密；未带 `enc:v1:` 前缀的旧明文记录仍可正常读出（向后兼容，无需迁移）。密钥缺失时本地/测试用固定开发密钥并告警，生产环境 `AppSettings` 校验强制要求配置 `IT_QUERY_FIELD_KEY`。`EvaluationCaseRecord.question`（黄金评测用例，知识团队所有）明确不加密。
+- 查询限流（A-4）：`/api/query` 按主体施加每日配额（`IT_QUERY_DAILY_QUOTA`，默认 1000，按 UTC 自然日重置），超限返回 `HTTP 429` + `Retry-After` + `X-RateLimit-*` 头；`development` 认证模式与匿名/空主体跳过。`backend/ratelimit.py` 为进程内线程安全计数器，重启清零（单实例部署适用），`tests/test_ratelimit.py` 覆盖配额、隔离、跨日重置与端点 429。
 
 ## 验证基线
 
@@ -64,11 +65,10 @@ node --check web/admin.js
 
 ## 后续工作
 
-1. **已收口**：`reindex`/`withdraw` 任务类型与可重试失败持久化退避（`next_attempt_at`，迁移 `20260922_0011`）；进程内可观测性（`/api/admin/metrics` + 慢请求/慢查询日志）与离线并发压测（`scripts/bench_concurrency.py`）；`query.question` 字段级加密（Fernet，密钥 `IT_QUERY_FIELD_KEY`，`tests/test_field_encryption.py` 覆盖加解密、旧明文回退与生产必配校验）。
+1. **已收口**：`reindex`/`withdraw` 任务类型与可重试失败持久化退避（`next_attempt_at`，迁移 `20260922_0011`）；进程内可观测性（`/api/admin/metrics` + 慢请求/慢查询日志）与离线并发压测（`scripts/bench_concurrency.py`）；`query.question` 字段级加密（Fernet，密钥 `IT_QUERY_FIELD_KEY`，`tests/test_field_encryption.py` 覆盖加解密、旧明文回退与生产必配校验）；`/api/query` 每日配额限流（`IT_QUERY_DAILY_QUOTA`，默认 1000，429 + Retry-After + X-RateLimit-*，`tests/test_ratelimit.py` 覆盖配额/隔离/跨日重置/端点 429）。
 2. 文档保留期 + 保留策略（自动清理任务，默认 365 天，待实现）。
-3. `query` 接口限流/配额（每用户每日 1000 次，超阈返回 429 + Retry-After；待实现）。
-5. 引用持久化、用户反馈、知识缺口统计（采购硬缺口，零命中，待建表）。
-6. 用户/用户组实体表与部门（域 B 组织模型，ACL 的 group/role 当前只是 OIDC claim 字符串）。
-7. 检索质量数据集运营（黄金题评审流程）、检索重排与知识域模型（域 B）。
-8. 提供 Kubernetes、网络策略、备份恢复和灰度发布参考部署。
-9. `evaluate` 异步评测任务类型（评测门已存在，Worker 侧仍 `job_type_unsupported`）。
+3. 引用持久化、用户反馈、知识缺口统计（采购硬缺口，零命中，待建表）。
+4. 用户/用户组实体表与部门（域 B 组织模型，ACL 的 group/role 当前只是 OIDC claim 字符串）。
+5. 检索质量数据集运营（黄金题评审流程）、检索重排与知识域模型（域 B）。
+6. 提供 Kubernetes、网络策略、备份恢复和灰度发布参考部署。
+7. `evaluate` 异步评测任务类型（评测门已存在，Worker 侧仍 `job_type_unsupported`）。

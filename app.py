@@ -19,6 +19,7 @@ from backend import (
     build_embedding_client, configure_logging, log_event, request_id_context,
 )
 from backend.metrics import get_metrics
+from backend.ratelimit import QueryRateLimiter
 
 
 LOGGER = logging.getLogger("docmind.it")
@@ -59,6 +60,7 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
     embeddings = embedding_client or build_embedding_client(config)
     retriever = HybridRetriever(database, embeddings, top_k=config.retrieval_top_k)
     service = ITQueryService(str(config.knowledge_path), database, models, gateway, retriever)
+    rate_limiter = QueryRateLimiter(config.query_daily_quota)
     authenticator = OIDCAuthenticator(
         mode=config.auth_mode,
         issuer=config.oidc_issuer,
@@ -315,12 +317,28 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
 
     @application.post("/api/query")
     def query(req: QueryReq, principal: Principal = Depends(viewer)):
+        # Per-user daily quota. Skipped in development mode (shared dev identity) and for
+        # anonymous/empty subjects. Anonymous skipping keeps the local offline demo usable.
+        ratelimit_headers: dict[str, str] = {}
+        if config.auth_mode != "development" and rate_limiter.enabled and principal.subject_id:
+            allowed, remaining, retry_after = rate_limiter.hit(principal.subject_id)
+            ratelimit_headers = {
+                "X-RateLimit-Limit": str(config.query_daily_quota),
+                "X-RateLimit-Remaining": str(remaining),
+            }
+            if not allowed:
+                return JSONResponse(
+                    {"ok": False, "error": "今日查询次数已达上限", "retry_after_seconds": retry_after},
+                    status_code=429,
+                    headers={"Retry-After": str(retry_after), **ratelimit_headers},
+                )
         try:
-            return {"ok": True, **service.query(req.session_id, req.question, principal)}
+            result = service.query(req.session_id, req.question, principal)
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         except ModelGatewayError:
             return JSONResponse({"ok": False, "error": "模型服务暂时不可用，请稍后重试"}, status_code=502)
+        return JSONResponse({"ok": True, **result}, headers=ratelimit_headers)
 
     @application.get("/api/history")
     async def history(session_id: str = "default", limit: int = 20,
