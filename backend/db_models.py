@@ -143,6 +143,30 @@ class DocumentRecord(Base):
         DateTime(timezone=True), nullable=True,
         comment="保留期到点后的软标记时间；宽限期后再硬删。NULL 表示仍在保留期内。",
     )
+    # 知识域归属（decision #6，最小形态）。可空、外键 SET NULL，存量文档不受影响；
+    # 检索与 ACL 本期不做域级隔离，域仅为元数据包，供后续版本按域过滤。
+    domain_key: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("knowledge_domains.domain_key", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+
+
+class KnowledgeDomainRecord(Base):
+    """Knowledge domain attribution (decision #6, minimal form).
+
+    仅作单域归属的元数据容器：检索与 ACL 本期不做域级隔离。外键可空且删除时 SET NULL，
+    因此存量 documents 行（domain_key 为 NULL）不受知识域表影响；删除一个域只把引用它的
+    documents 行置空，而不是级联删除文档。
+    """
+
+    __tablename__ = "knowledge_domains"
+
+    domain_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
 
 
 class DocumentVersionRecord(Base):

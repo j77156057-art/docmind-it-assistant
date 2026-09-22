@@ -27,6 +27,8 @@ def build_worker(settings: AppSettings) -> tuple[IngestionWorker, QueryDatabase]
         max_overflow=settings.database_max_overflow,
         pool_timeout=settings.database_pool_timeout,
         connect_timeout=settings.database_connect_timeout,
+        credential_key=settings.provider_credential_key.get_secret_value() or settings.auth_subject_salt.get_secret_value(),
+        legacy_credential_key=settings.auth_subject_salt.get_secret_value(),
         query_field_key=settings.query_field_key.get_secret_value(),
         retention_days=settings.retention_days,
         retention_grace_days=settings.retention_grace_days,

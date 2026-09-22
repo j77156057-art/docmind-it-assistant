@@ -187,6 +187,12 @@ class AppSettings(BaseModel):
     auth_subject_salt: SecretStr = Field(
         default=SecretStr("development-only"), exclude=True, repr=False,
     )
+    auth_session_secret: SecretStr = Field(
+        default=SecretStr(""), exclude=True, repr=False,
+    )
+    provider_credential_key: SecretStr = Field(
+        default=SecretStr(""), exclude=True, repr=False,
+    )
     query_field_key: SecretStr = Field(
         default=SecretStr(""), exclude=True, repr=False,
     )
@@ -270,6 +276,12 @@ class AppSettings(BaseModel):
                 raise ValueError("IT_OIDC_SCOPES 必须包含 openid")
         if self.environment == "production" and len(self.auth_subject_salt.get_secret_value()) < 32:
             raise ValueError("生产环境 IT_AUTH_SUBJECT_SALT 至少需要 32 个字符")
+        if self.environment == "production" and self.auth_session_secret.get_secret_value() \
+                and len(self.auth_session_secret.get_secret_value()) < 32:
+            raise ValueError("生产环境 IT_AUTH_SESSION_SECRET 至少需要 32 个字符")
+        if self.environment == "production" and self.provider_credential_key.get_secret_value() \
+                and len(self.provider_credential_key.get_secret_value()) < 32:
+            raise ValueError("生产环境 IT_PROVIDER_CREDENTIAL_KEY 至少需要 32 个字符")
         if self.environment == "production" and not self.query_field_key.get_secret_value():
             raise ValueError(
                 "生产环境 IT_QUERY_FIELD_KEY 必须配置（用于 query.question 字段级加密）"
@@ -405,6 +417,8 @@ class AppSettings(BaseModel):
             oidc_token_endpoint=read("IT_OIDC_TOKEN_ENDPOINT", "").strip(),
             oidc_end_session_url=read("IT_OIDC_END_SESSION_URL", "").strip(),
             auth_subject_salt=SecretStr(read("IT_AUTH_SUBJECT_SALT", "development-only")),
+            auth_session_secret=SecretStr(read("IT_AUTH_SESSION_SECRET", "")),
+            provider_credential_key=SecretStr(read("IT_PROVIDER_CREDENTIAL_KEY", "")),
             query_field_key=SecretStr(read("IT_QUERY_FIELD_KEY", "").strip()),
             log_level=read("IT_LOG_LEVEL", "INFO").strip().upper(),
             log_json=_bool(read("IT_LOG_JSON", "true")),

@@ -23,7 +23,8 @@ from .db_models import (
     DepartmentRecord, DocumentAclRecord, DocumentChunkRecord, DocumentRecord,
     DocumentVersionRecord, DocumentVersionReviewRecord, EvaluationCaseRecord,
     EvaluationCaseResultRecord, EvaluationRunRecord, FEEDBACK_RATING, GAP_STATUS, GAP_TYPES,
-    GroupRecord, IngestionJobRecord, KnowledgeGapRecord, ModelUsageRecord, ORG_STATUS, QueryRecord,
+    GroupRecord, IngestionJobRecord, KnowledgeDomainRecord, KnowledgeGapRecord, ModelUsageRecord,
+    ORG_STATUS, QueryRecord,
     QueryCitationRecord, QueryFeedbackRecord, RuntimeModelConfigRecord,
     RuntimeProviderCredentialRecord, UserDepartmentRecord, UserGroupMembershipRecord, UserRecord,
 )
@@ -60,7 +61,8 @@ class QueryDatabase:
     """Repository boundary; PostgreSQL schema ownership remains with Alembic."""
 
     def __init__(self, url_or_path: str, *, pool_size: int = 5, max_overflow: int = 10,
-                 pool_timeout: int = 30, connect_timeout: int = 5, secret_key: str = "",
+                 pool_timeout: int = 30, connect_timeout: int = 5,
+                 credential_key: str = "", legacy_credential_key: str | None = None,
                  slow_db_ms: int = 200, query_field_key: str = "",
                  retention_days: int = 365, retention_grace_days: int = 30):
         self.url = _database_url(str(url_or_path))
@@ -84,8 +86,15 @@ class QueryDatabase:
             })
         self.engine: Engine = create_engine(self.url, **engine_options)
         self._sessions = sessionmaker(bind=self.engine, expire_on_commit=False)
-        digest = hashlib.sha256((secret_key or "development-only").encode("utf-8")).digest()
+        digest = hashlib.sha256((credential_key or "development-only").encode("utf-8")).digest()
         self._credential_cipher = Fernet(base64.urlsafe_b64encode(digest))
+        # Legacy cipher used only during the key-transition window: when IT_PROVIDER_CREDENTIAL_KEY
+        # is set apart from IT_AUTH_SUBJECT_SALT, credentials encrypted under the old salt-derived
+        # key remain decryptable. Built only when it differs from the current key.
+        self._legacy_credential_cipher: Fernet | None = None
+        if legacy_credential_key and legacy_credential_key != (credential_key or "development-only"):
+            legacy_digest = hashlib.sha256(legacy_credential_key.encode("utf-8")).digest()
+            self._legacy_credential_cipher = Fernet(base64.urlsafe_b64encode(legacy_digest))
         self._field_encryptor = FieldEncryptor(query_field_key)
         self._attach_slow_query_listener()
 
@@ -115,11 +124,36 @@ class QueryDatabase:
                 )
 
     def initialize(self) -> None:
-        """Create only disposable SQLite schemas; PostgreSQL uses Alembic exclusively."""
+        """Create disposable SQLite schemas and seed the default knowledge domain.
+
+        PostgreSQL still uses Alembic exclusively for schema; the idempotent default-domain seed
+        below runs for both backends so a freshly migrated database always has a fallback domain.
+        """
         if self.backend == "sqlite":
             inspector = inspect(self.engine)
             if not inspector.has_table("alembic_version"):
                 Base.metadata.create_all(self.engine)
+        self._seed_default_knowledge_domain()
+
+    def _seed_default_knowledge_domain(self) -> None:
+        """Insert the default knowledge domain exactly once (idempotent — no double insert)."""
+        try:
+            with self._sessions() as session:
+                count = session.scalar(
+                    select(func.count()).select_from(KnowledgeDomainRecord)
+                )
+            if count and count > 0:
+                return
+            with self._sessions.begin() as session:
+                session.add(KnowledgeDomainRecord(
+                    domain_key="default",
+                    name="默认知识域",
+                    description="默认知识域，存量文档归属",
+                ))
+        except (OSError, SQLAlchemyError):
+            # Seeding is best-effort: a missing table (e.g. pre-migration SQLite) must not crash
+            # normal operation; the table is guaranteed to exist once Alembic has run.
+            return
 
     def dispose(self) -> None:
         self.engine.dispose()
@@ -144,6 +178,7 @@ class QueryDatabase:
                 KnowledgeGapRecord.__tablename__, UserRecord.__tablename__,
                 GroupRecord.__tablename__, UserGroupMembershipRecord.__tablename__,
                 DepartmentRecord.__tablename__, UserDepartmentRecord.__tablename__,
+                KnowledgeDomainRecord.__tablename__,
             }
             if not required.issubset(tables):
                 return False, "database_schema_missing"
@@ -2002,13 +2037,53 @@ class QueryDatabase:
             return {}
         values = {}
         for row in rows:
+            plaintext = self._decrypt_credential(row.ciphertext)
+            if plaintext is None:
+                continue
+            values[row.provider] = plaintext
+        return values
+
+    def _decrypt_credential(self, ciphertext: str) -> str | None:
+        """Decrypt a stored provider credential.
+
+        Tries the current credential cipher first, then a legacy (rotated) key so credentials
+        encrypted before ``IT_PROVIDER_CREDENTIAL_KEY`` was split from ``IT_AUTH_SUBJECT_SALT``
+        stay readable during the key-transition window.
+        """
+        for cipher in (self._credential_cipher, self._legacy_credential_cipher):
+            if cipher is None:
+                continue
             try:
-                values[row.provider] = self._credential_cipher.decrypt(
-                    row.ciphertext.encode("ascii")
-                ).decode("utf-8")
+                return cipher.decrypt(ciphertext.encode("ascii")).decode("utf-8")
             except (InvalidToken, ValueError, UnicodeError):
                 continue
-        return values
+        return None
+
+    def create_knowledge_domain(self, domain_key: str, name: str, description: str = "") -> None:
+        """Upsert a knowledge domain by its primary key (idempotent)."""
+        key = domain_key[:64]
+        with self._sessions.begin() as session:
+            row = session.get(KnowledgeDomainRecord, key)
+            if row is None:
+                row = KnowledgeDomainRecord(domain_key=key)
+                session.add(row)
+            row.name = name[:128]
+            row.description = description
+
+    def list_knowledge_domains(self) -> list[dict]:
+        """Return all knowledge domains as dicts (domain_key/name/description/created_at)."""
+        statement = select(KnowledgeDomainRecord).order_by(KnowledgeDomainRecord.domain_key)
+        with self._sessions() as session:
+            rows = session.scalars(statement).all()
+        return [
+            {
+                "domain_key": row.domain_key,
+                "name": row.name,
+                "description": row.description,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ]
 
     def set_runtime_provider_credential(self, *, provider: str, api_key: str,
                                         actor_subject_id: str, request_id: str) -> None:

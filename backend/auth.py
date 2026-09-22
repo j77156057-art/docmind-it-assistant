@@ -268,7 +268,8 @@ def _claim_values(claims: Mapping, path: str) -> frozenset[str]:
 
 class OIDCAuthenticator:
     def __init__(self, *, mode: str, issuer: str, audience: str, jwks_url: str,
-                 subject_salt: str, role_claim: str = "roles", group_claim: str = "groups",
+                 subject_salt: str, session_secret: str = "",
+                 role_claim: str = "roles", group_claim: str = "groups",
                  department_claim: str = "department",
                  algorithms: tuple[str, ...] = ("RS256",), leeway_seconds: int = 30,
                  key_resolver: Callable[[str], object] | None = None,
@@ -286,6 +287,9 @@ class OIDCAuthenticator:
         self.audience = audience
         self.jwks_url = jwks_url
         self.subject_salt = subject_salt
+        # Session JWT signing key. Falls back to the subject HMAC salt when unset so existing
+        # deployments keep validating sessions; set IT_AUTH_SESSION_SECRET to split the two apart.
+        self.session_secret = session_secret or subject_salt
         self.role_claim = role_claim
         self.group_claim = group_claim
         self.department_claim = department_claim
@@ -375,7 +379,7 @@ class OIDCAuthenticator:
             "typ": FLOW_TYPE, "state": request.state, "nonce": request.nonce,
             "code_verifier": request.code_verifier,
             "iat": now, "exp": now + OIDC_FLOW_SECONDS,
-        }, _session_signing_key(self.subject_salt), algorithm="HS256")
+        }, _session_signing_key(self.session_secret), algorithm="HS256")
 
     def read_flow_token(self, token: str) -> dict:
         """Open the transient flow cookie. Every failure collapses to one error: the caller is an
@@ -384,7 +388,7 @@ class OIDCAuthenticator:
             raise AuthenticationError("login_state_missing")
         try:
             claims = jwt.decode(
-                token, _session_signing_key(self.subject_salt), algorithms=["HS256"],
+                token, _session_signing_key(self.session_secret), algorithms=["HS256"],
                 options={"require": ["exp", "iat", "state", "nonce", "code_verifier"]},
             )
         except InvalidTokenError:
@@ -572,7 +576,7 @@ class OIDCAuthenticator:
             "roles": sorted({str(role).strip().lower() for role in roles if str(role).strip()}),
             "groups": sorted({str(g).strip().lower() for g in groups if str(g).strip()}),
             "iat": now, "exp": now + lifetime * 3600,
-        }, _session_signing_key(self.subject_salt), algorithm="HS256")
+        }, _session_signing_key(self.session_secret), algorithm="HS256")
 
     def issue_oidc_session(self, claims: Mapping) -> tuple[str, Principal]:
         """Exchange verified id_token claims for our own session.
@@ -610,7 +614,7 @@ class OIDCAuthenticator:
             raise AuthenticationError("credentials_missing")
         try:
             claims = jwt.decode(
-                token, _session_signing_key(self.subject_salt), algorithms=["HS256"],
+                token, _session_signing_key(self.session_secret), algorithms=["HS256"],
                 options={"require": ["exp", "iat", "sub"]},
             )
         except InvalidTokenError:

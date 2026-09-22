@@ -56,7 +56,7 @@ class ModelGatewayMigrationTests(unittest.TestCase):
 
     def test_runtime_cloud_credential_is_encrypted_and_loaded(self):
         with tempfile.TemporaryDirectory() as root:
-            database = QueryDatabase(str(Path(root) / "credentials.db"), secret_key="test-secret")
+            database = QueryDatabase(str(Path(root) / "credentials.db"), credential_key="test-secret")
             database.initialize()
             database.set_runtime_provider_credential(
                 provider="qwen", api_key="secret-cloud-key",

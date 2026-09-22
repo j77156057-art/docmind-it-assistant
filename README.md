@@ -120,6 +120,10 @@ IT_OIDC_CLIENT_ID=docmind-portal
 IT_OIDC_REDIRECT_URI=https://docmind.example.com/api/auth/oidc/callback
 IT_OIDC_SCOPES=openid profile email
 IT_AUTH_SUBJECT_SALT=<至少 32 字符的随机值>
+# 会话 JWT（HS256）签名密钥。留空则回退到 IT_AUTH_SUBJECT_SALT 派生；生产环境建议独立配置、至少 32 字符。
+IT_AUTH_SESSION_SECRET=
+# 运行时供应商凭证（API Key）Fernet 加密密钥。留空则回退到 IT_AUTH_SUBJECT_SALT 派生；生产环境建议独立配置。
+IT_PROVIDER_CREDENTIAL_KEY=
 # query.question 与 document_chunks.content（正文）字段级加密密钥（Fernet）。生产必须配置；可为原始 32 字节 Fernet 密钥或任意口令（SHA-256 派生）。
 IT_QUERY_FIELD_KEY=<至少 16 字符的随机值或 Fernet 密钥>
 ```
