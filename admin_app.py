@@ -36,6 +36,24 @@ LOGGER = logging.getLogger("docmind.it.admin")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf", ".docx"}
 
+# Export column order for the procurement-gap admin surfaces. First column is always `id`, last is
+# always `created_at`, matching the audit-events export contract (lower_snake_case, utf-8-sig BOM).
+CITATION_COLUMNS = [
+    "id", "query_id", "citation_kind", "document_chunk_id", "document_version_id",
+    "source", "section", "page_number", "line_number", "score", "citation_rank", "created_at",
+]
+FEEDBACK_COLUMNS = ["id", "query_id", "actor_subject_id", "rating", "comment", "created_at"]
+KNOWLEDGE_GAP_COLUMNS = [
+    "id", "query_id", "gap_type", "gap_summary", "model_route", "status",
+    "resolved_version_id", "created_at", "updated_at",
+]
+ORG_USER_COLUMNS = [
+    "subject_id", "display_name", "email", "status", "last_seen_at",
+    "department_key", "created_at",
+]
+ORG_GROUP_COLUMNS = ["group_key", "display_name", "member_count", "created_at"]
+ORG_DEPARTMENT_COLUMNS = ["department_key", "name", "parent_key", "created_at"]
+
 
 class AclEntryReq(BaseModel):
     principal_type: Literal["user", "group", "role"]
@@ -86,6 +104,10 @@ class ReasonReq(BaseModel):
 
 class RetentionPurgeReq(BaseModel):
     stage: Literal["soft", "hard", "both"] = "both"
+
+
+class KnowledgeGapResolveReq(BaseModel):
+    resolved_version_id: int
 
 
 class EvaluationCaseReq(BaseModel):
@@ -1002,6 +1024,179 @@ def create_admin_app(settings: AppSettings | None = None,
             content=content,
             media_type=media_type,
             headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    def _export_rows(rows, columns, *, export_format: str, entity: str, action: str,
+                     target_type: str, principal: Principal, summary_extra: str = "") -> Response:
+        """Render `rows` as CSV (utf-8-sig) or JSON and self-audit the download.
+
+        Reuses the audit-events export contract: `id`-first / `created_at`-last columns, BOM for
+        Excel CJK, and a `<entity>.export` audit row for every download.
+        """
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        if export_format == "json":
+            content = json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")
+            media_type = "application/json"
+            filename = f"{entity}-export-{stamp}.json"
+        else:
+            buffer = io.StringIO()
+            writer = csv.writer(buffer)
+            writer.writerow(columns)
+            for row in rows:
+                writer.writerow([row.get(col) for col in columns])
+            # BOM so Excel opens UTF-8 CSV with CJK intact.
+            content = buffer.getvalue().encode("utf-8-sig")
+            media_type = "text/csv; charset=utf-8"
+            filename = f"{entity}-export-{stamp}.csv"
+        summary = f"format={export_format};rows={len(rows)}{summary_extra}"
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id, action=action,
+            target_type=target_type, target_ref=summary[:512],
+            result="success", request_id=request_id_context.get() or "",
+        )
+        return Response(
+            content=content, media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    @application.get("/api/admin/citations")
+    async def admin_citations(
+        limit: int = 200,
+        _principal: Principal = Depends(require_capability("audit.read"))):
+        """List persisted answer citations."""
+        return {"ok": True, "items": database.citations(limit=limit)}
+
+    @application.get("/api/admin/citations/export")
+    async def admin_citations_export(
+        export_format: str = "csv", start: datetime | None = None, end: datetime | None = None,
+        query_id: int | None = None, limit: int = 2000,
+        principal: Principal = Depends(require_capability("audit.read"))):
+        if export_format not in {"csv", "json"}:
+            raise HTTPException(status_code=400, detail="export_format 仅支持 csv 或 json")
+        rows = database.citations_export(start=start, end=end, query_id=query_id, limit=limit)
+        return _export_rows(
+            rows, CITATION_COLUMNS, export_format=export_format, entity="citations",
+            action="citations.export", target_type="citations_export", principal=principal,
+        )
+
+    @application.get("/api/admin/feedback")
+    async def admin_feedback(
+        rating: str | None = None, actor: str | None = None, limit: int = 200,
+        _principal: Principal = Depends(require_capability("audit.read"))):
+        """List user feedback."""
+        return {"ok": True, "items": database.feedback(rating=rating, actor=actor, limit=limit)}
+
+    @application.get("/api/admin/feedback/export")
+    async def admin_feedback_export(
+        export_format: str = "csv", rating: str | None = None, actor: str | None = None,
+        limit: int = 2000, principal: Principal = Depends(require_capability("audit.read"))):
+        if export_format not in {"csv", "json"}:
+            raise HTTPException(status_code=400, detail="export_format 仅支持 csv 或 json")
+        rows = database.feedback_export(rating=rating, actor=actor, limit=limit)
+        return _export_rows(
+            rows, FEEDBACK_COLUMNS, export_format=export_format, entity="feedback",
+            action="feedback.export", target_type="feedback_export", principal=principal,
+        )
+
+    @application.get("/api/admin/knowledge-gaps")
+    async def admin_knowledge_gaps(
+        gap_type: str | None = None, status: str | None = None, limit: int = 200,
+        _principal: Principal = Depends(require_capability("audit.read"))):
+        """List auto-registered knowledge gaps."""
+        return {"ok": True, "items": database.knowledge_gaps(gap_type=gap_type, status=status, limit=limit)}
+
+    @application.get("/api/admin/knowledge-gaps/export")
+    async def admin_knowledge_gaps_export(
+        export_format: str = "csv", gap_type: str | None = None, status: str | None = None,
+        limit: int = 2000, principal: Principal = Depends(require_capability("audit.read"))):
+        if export_format not in {"csv", "json"}:
+            raise HTTPException(status_code=400, detail="export_format 仅支持 csv 或 json")
+        rows = database.knowledge_gaps_export(gap_type=gap_type, status=status, limit=limit)
+        return _export_rows(
+            rows, KNOWLEDGE_GAP_COLUMNS, export_format=export_format, entity="knowledge-gaps",
+            action="knowledge_gaps.export", target_type="knowledge_gaps_export",
+            principal=principal,
+        )
+
+    @application.post("/api/admin/knowledge-gaps/{gap_id}/resolve")
+    async def admin_resolve_knowledge_gap(
+        gap_id: int, payload: KnowledgeGapResolveReq,
+        principal: Principal = Depends(require_capability("document.write"))):
+        """Close a gap as addressed, linking the version that filled it. Self-audited."""
+        try:
+            database.resolve_knowledge_gap(
+                gap_id, payload.resolved_version_id, principal.subject_id,
+                request_id_context.get() or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        return {"ok": True}
+
+    @application.post("/api/admin/knowledge-gaps/{gap_id}/dismiss")
+    async def admin_dismiss_knowledge_gap(
+        gap_id: int, principal: Principal = Depends(require_capability("document.write"))):
+        """Dismiss a gap. Self-audited."""
+        try:
+            database.dismiss_knowledge_gap(
+                gap_id, principal.subject_id, request_id_context.get() or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        return {"ok": True}
+
+    @application.get("/api/admin/org/users")
+    async def admin_org_users(
+        limit: int = 500, _principal: Principal = Depends(require_capability("audit.read"))):
+        """List org users (read-only view over the lazily-synced org model)."""
+        return {"ok": True, "items": database.org_users(limit=limit)}
+
+    @application.get("/api/admin/org/groups")
+    async def admin_org_groups(
+        limit: int = 500, _principal: Principal = Depends(require_capability("audit.read"))):
+        """List org groups with member counts."""
+        return {"ok": True, "items": database.org_groups(limit=limit)}
+
+    @application.get("/api/admin/org/departments")
+    async def admin_org_departments(
+        limit: int = 500, _principal: Principal = Depends(require_capability("audit.read"))):
+        """List org departments (metadata only)."""
+        return {"ok": True, "items": database.org_departments(limit=limit)}
+
+    @application.get("/api/admin/org/users/export")
+    async def admin_org_users_export(
+        export_format: str = "csv", limit: int = 2000,
+        principal: Principal = Depends(require_capability("audit.read"))):
+        if export_format not in {"csv", "json"}:
+            raise HTTPException(status_code=400, detail="export_format 仅支持 csv 或 json")
+        rows = database.org_users_export(limit=limit)
+        return _export_rows(
+            rows, ORG_USER_COLUMNS, export_format=export_format, entity="org-users",
+            action="org_users.export", target_type="org_users_export", principal=principal,
+        )
+
+    @application.get("/api/admin/org/groups/export")
+    async def admin_org_groups_export(
+        export_format: str = "csv", limit: int = 2000,
+        principal: Principal = Depends(require_capability("audit.read"))):
+        if export_format not in {"csv", "json"}:
+            raise HTTPException(status_code=400, detail="export_format 仅支持 csv 或 json")
+        rows = database.org_groups_export(limit=limit)
+        return _export_rows(
+            rows, ORG_GROUP_COLUMNS, export_format=export_format, entity="org-groups",
+            action="org_groups.export", target_type="org_groups_export", principal=principal,
+        )
+
+    @application.get("/api/admin/org/departments/export")
+    async def admin_org_departments_export(
+        export_format: str = "csv", limit: int = 2000,
+        principal: Principal = Depends(require_capability("audit.read"))):
+        if export_format not in {"csv", "json"}:
+            raise HTTPException(status_code=400, detail="export_format 仅支持 csv 或 json")
+        rows = database.org_departments_export(limit=limit)
+        return _export_rows(
+            rows, ORG_DEPARTMENT_COLUMNS, export_format=export_format, entity="org-departments",
+            action="org_departments.export", target_type="org_departments_export",
+            principal=principal,
         )
 
     @application.get("/api/admin/retention/preview")

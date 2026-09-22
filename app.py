@@ -20,6 +20,7 @@ from backend import (
 )
 from backend.metrics import get_metrics
 from backend.ratelimit import QueryRateLimiter
+from backend.db_models import FEEDBACK_RATING
 
 
 LOGGER = logging.getLogger("docmind.it")
@@ -29,6 +30,12 @@ REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 class QueryReq(BaseModel):
     session_id: str = "default"
     question: str = ""
+
+
+class FeedbackReq(BaseModel):
+    query_id: int
+    rating: str
+    comment: str = ""
 
 
 def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway | None = None,
@@ -251,6 +258,13 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
             raise HTTPException(status_code=401, detail="登录校验失败，请重新登录") from None
         log_event(LOGGER, logging.INFO, "oidc_login_succeeded",
                   actor_subject_id=principal.subject_id)
+        # Lazy org sync on login (idempotent upsert of user / groups / memberships). A failure here
+        # must not break the login that just succeeded.
+        try:
+            database.sync_org_on_login(principal)
+        except Exception as exc:  # noqa: BLE001 - 同步失败不影响登录
+            log_event(LOGGER, logging.WARNING, "org_sync_failed",
+                      actor_subject_id=principal.subject_id, error=str(exc)[:128])
         response = RedirectResponse("/", status_code=302)
         response.set_cookie(
             SESSION_COOKIE, session, httponly=True, samesite="strict",
@@ -340,7 +354,35 @@ def create_app(settings: AppSettings | None = None, model_gateway: ModelGateway 
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         except ModelGatewayError:
             return JSONResponse({"ok": False, "error": "模型服务暂时不可用，请稍后重试"}, status_code=502)
+        # Non-fatal persistence of procurement-gap signals (references + knowledge gaps). A failure
+        # here must never block the answer the user already received (cf. record_model_attempts).
+        try:
+            database.record_citations(result["query_id"], result.get("citations") or [])
+            if result.get("evidence") == "insufficient":
+                database.register_knowledge_gap(
+                    result["query_id"], "insufficient_evidence",
+                    str((result.get("model") or {}).get("route", "")),
+                )
+        except Exception as exc:  # noqa: BLE001 - 落库失败不阻断答案
+            log_event(
+                LOGGER, logging.WARNING, "procurement_signal_persist_failed",
+                query_id=result.get("query_id"), error=str(exc)[:128],
+            )
         return JSONResponse({"ok": True, **result}, headers=ratelimit_headers)
+
+    @application.post("/api/feedback")
+    def submit_feedback(req: FeedbackReq, principal: Principal = Depends(viewer)):
+        """Persist a user's rating for a query. Idempotent; not self-audited (matches /api/query)."""
+        if req.rating not in FEEDBACK_RATING:
+            return JSONResponse(
+                {"ok": False, "error": "反馈评分必须是 positive 或 negative"}, status_code=400,
+            )
+        comment = (req.comment or "")[:1000]
+        try:
+            database.record_feedback(req.query_id, principal.subject_id, req.rating, comment)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True})
 
     @application.get("/api/history")
     async def history(session_id: str = "default", limit: int = 20,
