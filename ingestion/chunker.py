@@ -21,6 +21,7 @@ class DocumentChunk:
     page_number: int | None
     content: str
     parent_content: str = ""
+    is_title_block: bool = False
 
 
 def _split_windows(text: str, *, size: int, overlap: int) -> list[tuple[int, int, str]]:
@@ -49,6 +50,22 @@ def _split_windows(text: str, *, size: int, overlap: int) -> list[tuple[int, int
     return windows
 
 
+def _is_title_only(heading: str, content: str) -> bool:
+    """Flag a chunk whose body carries essentially no text beyond its own section title.
+
+    Title-only blocks (a heading with no body, or a slice no longer than the heading plus a
+    tiny tolerance) carry no substance for grounding, so retrieval ranks them below substantive
+    chunks that share the same heading — see ``HybridRetriever.retrieve``.
+    """
+    heading = (heading or "").strip()
+    content = (content or "").strip()
+    if not content:
+        return True
+    if content == heading:
+        return True
+    return len(content) <= len(heading) + 8
+
+
 def chunk_document(document: ParsedDocument, *, max_chars: int, overlap_chars: int,
                   child_max_chars: int | None = None,
                   child_overlap_chars: int | None = None) -> list[DocumentChunk]:
@@ -69,6 +86,7 @@ def chunk_document(document: ParsedDocument, *, max_chars: int, overlap_chars: i
             for start, _end, content in parent_windows:
                 chunks.append(DocumentChunk(
                     len(chunks), section.heading[:512], section.page_number, content,
+                    is_title_block=_is_title_only(section.heading, content),
                 ))
             continue
         child_overlap = (
@@ -94,6 +112,7 @@ def chunk_document(document: ParsedDocument, *, max_chars: int, overlap_chars: i
             chunks.append(DocumentChunk(
                 len(chunks), section.heading[:512], section.page_number,
                 child_content, parent_text,
+                is_title_block=_is_title_only(section.heading, child_content),
             ))
     if not chunks:
         raise ValueError("文档分块结果为空")

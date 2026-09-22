@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text,
-    UniqueConstraint,
+    UniqueConstraint, false,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -222,6 +222,7 @@ class DocumentChunkRecord(Base):
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     parent_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_title_block: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false(), default=False)
     search_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(EmbeddingVector(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
