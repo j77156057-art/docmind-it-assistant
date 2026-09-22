@@ -28,6 +28,8 @@ def build_worker(settings: AppSettings) -> tuple[IngestionWorker, QueryDatabase]
         pool_timeout=settings.database_pool_timeout,
         connect_timeout=settings.database_connect_timeout,
         query_field_key=settings.query_field_key.get_secret_value(),
+        retention_days=settings.retention_days,
+        retention_grace_days=settings.retention_grace_days,
     )
     ingestion = DocumentIngestionService(
         database,

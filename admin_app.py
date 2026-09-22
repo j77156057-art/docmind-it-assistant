@@ -84,6 +84,10 @@ class ReasonReq(BaseModel):
     reason: str = Field(min_length=1, max_length=512)
 
 
+class RetentionPurgeReq(BaseModel):
+    stage: Literal["soft", "hard", "both"] = "both"
+
+
 class EvaluationCaseReq(BaseModel):
     case_key: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=1, max_length=2000)
@@ -114,6 +118,8 @@ def create_admin_app(settings: AppSettings | None = None,
         slow_db_ms=config.slow_db_ms,
         secret_key=config.auth_subject_salt.get_secret_value(),
         query_field_key=config.query_field_key.get_secret_value(),
+        retention_days=config.retention_days,
+        retention_grace_days=config.retention_grace_days,
     )
     embeddings = embedding_client or build_embedding_client(config)
     ingestion = DocumentIngestionService(
@@ -997,6 +1003,57 @@ def create_admin_app(settings: AppSettings | None = None,
             media_type=media_type,
             headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
+
+    @application.get("/api/admin/retention/preview")
+    async def retention_preview(
+        principal: Principal = Depends(require_capability("audit.read")),
+    ):
+        """Show how many documents the next purge would touch, without changing anything.
+
+        `soft_due` are inside the retention window but old enough to be soft-marked; `hard_due` are
+        past the grace window and would be physically removed. The read is itself audited.
+        """
+        preview = database.retention_preview()
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="retention.preview",
+            target_type="retention",
+            target_ref=(
+                f"total={preview['total_documents']};"
+                f"soft_due={preview['soft_due']};hard_due={preview['hard_due']}"
+            ),
+            result="success",
+            request_id=request_id_context.get() or "",
+        )
+        return {"ok": True, **preview}
+
+    @application.post("/api/admin/retention/purge")
+    async def retention_purge(
+        payload: RetentionPurgeReq,
+        principal: Principal = Depends(require_capability("document.write")),
+    ):
+        """Apply the retention policy (先软后硬). Destructive, so it needs `document.write`.
+
+        `stage` is "both" (default), "soft" (only mark) or "hard" (only remove past grace). The
+        action and its outcome counts are recorded for audit.
+        """
+        try:
+            result = database.retention_purge(stage=payload.stage)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        summary = (
+            f"stage={payload.stage};soft_marked={result['soft_marked']};"
+            f"hard_deleted={result['hard_deleted']}"
+        )
+        database.record_audit_event(
+            actor_subject_id=principal.subject_id,
+            action="retention.purge",
+            target_type="retention",
+            target_ref=summary[:512],
+            result="success",
+            request_id=request_id_context.get() or "",
+        )
+        return {"ok": True, **result}
 
     @application.get("/api/admin/metrics")
     async def metrics(_principal: Principal = Depends(require_capability("audit.read"))):

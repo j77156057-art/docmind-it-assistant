@@ -136,6 +136,13 @@ class DocumentRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
     )
+    # Retention (Phase 4, A-4): NULL while inside the retention window. When the window elapses
+    # it is stamped (soft mark); after the grace window the row is hard-deleted. Kept on the
+    # document and cascade-removed with the rest of the row, so children never outlive their parent.
+    expired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="保留期到点后的软标记时间；宽限期后再硬删。NULL 表示仍在保留期内。",
+    )
 
 
 class DocumentVersionRecord(Base):

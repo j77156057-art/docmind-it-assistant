@@ -139,6 +139,8 @@ class AppSettings(BaseModel):
     slow_request_ms: int = Field(default=1000, ge=0, le=60000)
     slow_db_ms: int = Field(default=200, ge=0, le=60000)
     query_daily_quota: int = Field(default=1000, ge=0, le=100000)
+    retention_days: int = Field(default=365, ge=1, le=3650)
+    retention_grace_days: int = Field(default=30, ge=0, le=3650)
     ingestion_heartbeat_seconds: int = Field(default=30, ge=5, le=3600)
     evaluation_gate_mode: Literal["off", "warn", "block"] = "warn"
     evaluation_allow_override: bool = False
@@ -349,6 +351,8 @@ class AppSettings(BaseModel):
             slow_request_ms=int(read("IT_SLOW_REQUEST_MS", "1000")),
             slow_db_ms=int(read("IT_SLOW_DB_MS", "200")),
             query_daily_quota=int(read("IT_QUERY_DAILY_QUOTA", "1000")),
+            retention_days=int(read("IT_RETENTION_DAYS", "365")),
+            retention_grace_days=int(read("IT_RETENTION_GRACE_DAYS", "30")),
             ingestion_job_timeout_seconds=int(read("IT_INGESTION_JOB_TIMEOUT_SECONDS", "600")),
             ingestion_heartbeat_seconds=int(read("IT_INGESTION_HEARTBEAT_SECONDS", "30")),
             evaluation_gate_mode=read("IT_EVAL_GATE_MODE", "warn").strip().lower(),
@@ -434,6 +438,8 @@ class AppSettings(BaseModel):
             "slow_request_ms": self.slow_request_ms,
             "slow_db_ms": self.slow_db_ms,
             "query_daily_quota": self.query_daily_quota,
+            "retention_days": self.retention_days,
+            "retention_grace_days": self.retention_grace_days,
             "evaluation_gate_mode": self.evaluation_gate_mode,
             "evaluation_allow_override": self.evaluation_allow_override,
             "evaluation_min_recall": self.evaluation_min_recall,

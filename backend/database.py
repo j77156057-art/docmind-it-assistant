@@ -12,7 +12,7 @@ import hashlib
 import logging
 import time
 
-from sqlalchemy import and_, case, create_engine, event as sa_event, func, inspect, or_, select, text, update
+from sqlalchemy import and_, case, create_engine, delete, event as sa_event, func, inspect, or_, select, text, update
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
@@ -59,9 +59,12 @@ class QueryDatabase:
 
     def __init__(self, url_or_path: str, *, pool_size: int = 5, max_overflow: int = 10,
                  pool_timeout: int = 30, connect_timeout: int = 5, secret_key: str = "",
-                 slow_db_ms: int = 200, query_field_key: str = ""):
+                 slow_db_ms: int = 200, query_field_key: str = "",
+                 retention_days: int = 365, retention_grace_days: int = 30):
         self.url = _database_url(str(url_or_path))
         self._slow_db_ms = max(0, int(slow_db_ms))
+        self._retention_days = max(1, int(retention_days))
+        self._retention_grace_days = max(0, int(retention_grace_days))
         url = make_url(self.url)
         engine_options: dict = {"pool_pre_ping": True}
         if url.get_backend_name() == "sqlite":
@@ -1948,6 +1951,148 @@ class QueryDatabase:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    # --- Document retention (Phase 4, A-4): 先软后硬 ---------------------------------
+    # `expired_at` is NULL while a document is inside its retention window. When the window elapses
+    # it is stamped (soft mark); after `retention_grace_days` more it is physically removed (hard
+    # delete) together with every child row, so storage is reclaimed while the record stays
+    # recoverable for the grace window. Scoped to the `documents` table and its cascade children.
+
+    def retention_preview(self) -> dict:
+        """Count what the next purge would touch, without changing anything."""
+        now = datetime.now(timezone.utc)
+        soft_cutoff = now - timedelta(days=self._retention_days)
+        hard_cutoff = now - timedelta(days=self._retention_grace_days)
+        with self._sessions() as session:
+            total = session.scalar(select(func.count()).select_from(DocumentRecord))
+            soft_due = session.scalar(
+                select(func.count()).select_from(DocumentRecord).where(
+                    DocumentRecord.expired_at.is_(None),
+                    DocumentRecord.created_at <= soft_cutoff,
+                )
+            )
+            hard_due = session.scalar(
+                select(func.count()).select_from(DocumentRecord).where(
+                    DocumentRecord.expired_at.is_not(None),
+                    DocumentRecord.expired_at <= hard_cutoff,
+                )
+            )
+        return {
+            "total_documents": int(total or 0),
+            "soft_due": int(soft_due or 0),
+            "hard_due": int(hard_due or 0),
+            "retention_days": self._retention_days,
+            "retention_grace_days": self._retention_grace_days,
+        }
+
+    def retention_purge(self, *, stage: str = "both") -> dict:
+        """Apply the retention policy.
+
+        stage="soft" -> stamp ``expired_at`` on documents past the retention window (mark only).
+        stage="hard" -> physically delete documents past the grace window and all their children.
+        stage="both" -> soft then hard (default; safe to run from cron).
+        Returns the counts of documents soft-marked and hard-deleted.
+        """
+        if stage not in {"soft", "hard", "both"}:
+            raise ValueError("stage 必须为 soft / hard / both")
+        now = datetime.now(timezone.utc)
+        soft_marked = 0
+        hard_deleted = 0
+        if stage in {"soft", "both"}:
+            soft_cutoff = now - timedelta(days=self._retention_days)
+            with self._sessions.begin() as session:
+                soft_marked = session.execute(
+                    update(DocumentRecord)
+                    .where(
+                        DocumentRecord.expired_at.is_(None),
+                        DocumentRecord.created_at <= soft_cutoff,
+                    )
+                    .values(expired_at=now)
+                ).rowcount
+        if stage in {"hard", "both"}:
+            hard_cutoff = now - timedelta(days=self._retention_grace_days)
+            hard_deleted = self._purge_expired_documents(hard_cutoff)
+        return {"soft_marked": int(soft_marked), "hard_deleted": int(hard_deleted)}
+
+    def _purge_expired_documents(self, hard_cutoff: datetime) -> int:
+        """Hard-delete documents past the grace window with explicit child cleanup.
+
+        SQLite does not enforce ``ON DELETE CASCADE`` without ``PRAGMA foreign_keys=ON``, so the
+        children are removed explicitly in dependency order. This keeps the operation correct on
+        both SQLite (local/tests) and PostgreSQL (CI/production) without relying on the pragma.
+        """
+        total = 0
+        with self._sessions.begin() as session:
+            document_ids = [
+                int(row[0]) for row in session.execute(
+                    select(DocumentRecord.id).where(
+                        DocumentRecord.expired_at.is_not(None),
+                        DocumentRecord.expired_at <= hard_cutoff,
+                    )
+                ).all()
+            ]
+            for document_id in document_ids:
+                version_ids = [
+                    int(row[0]) for row in session.execute(
+                        select(DocumentVersionRecord.id).where(
+                            DocumentVersionRecord.document_id == document_id
+                        )
+                    ).all()
+                ]
+                if version_ids:
+                    run_ids = [
+                        int(row[0]) for row in session.execute(
+                            select(EvaluationRunRecord.id).where(
+                                EvaluationRunRecord.document_version_id.in_(version_ids)
+                            )
+                        ).all()
+                    ]
+                    if run_ids:
+                        session.execute(
+                            delete(EvaluationCaseResultRecord).where(
+                                EvaluationCaseResultRecord.run_id.in_(run_ids)
+                            )
+                        )
+                    session.execute(
+                        delete(DocumentVersionReviewRecord).where(
+                            DocumentVersionReviewRecord.document_version_id.in_(version_ids)
+                        )
+                    )
+                    session.execute(
+                        delete(DocumentChunkRecord).where(
+                            DocumentChunkRecord.document_version_id.in_(version_ids)
+                        )
+                    )
+                    session.execute(
+                        delete(ModelUsageRecord).where(
+                            ModelUsageRecord.document_version_id.in_(version_ids)
+                        )
+                    )
+                    session.execute(
+                        delete(EvaluationRunRecord).where(
+                            EvaluationRunRecord.document_version_id.in_(version_ids)
+                        )
+                    )
+                    session.execute(
+                        delete(DocumentVersionRecord).where(
+                            DocumentVersionRecord.document_id == document_id
+                        )
+                    )
+                session.execute(
+                    delete(DocumentAclRecord).where(
+                        DocumentAclRecord.document_id == document_id
+                    )
+                )
+                session.execute(
+                    delete(IngestionJobRecord).where(
+                        IngestionJobRecord.document_id == document_id
+                    )
+                )
+                session.execute(
+                    delete(DocumentRecord).where(DocumentRecord.id == document_id)
+                )
+                total += 1
+        return total
 
     @staticmethod
     def _cosine(left, right) -> float:

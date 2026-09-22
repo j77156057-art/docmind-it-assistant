@@ -228,6 +228,11 @@ IT_SLOW_DB_MS=200
 IT_QUERY_FIELD_KEY=
 # 每用户每日查询配额（0 关闭）。超限返回 HTTP 429 + Retry-After 与 X-RateLimit-* 头。
 IT_QUERY_DAILY_QUOTA=1000
+# 文档保留期（天）：超过该时长的文档先软标记 expired_at，再经宽限期后硬删（先软后硬）。
+IT_RETENTION_DAYS=365
+# 保留期到点后的宽限期（天）：软标记再经过该时长才物理删除，期间记录可恢复。
+IT_RETENTION_GRACE_DAYS=30
+# 保留期清理由 cron 调用 `python scripts/purge_expired.py`（stage=both，幂等）。
 ```
 
 ```powershell
@@ -323,6 +328,12 @@ IT_EVAL_TOP_K=5
 用户提问（`query.question`）按 `IT_QUERY_FIELD_KEY` 做字段级 AES 加密落库，读取时解密，密钥缺失时本地/测试使用固定开发密钥并告警。加密值带 `enc:v1:` 前缀，未带前缀的旧明文记录仍可正常读出（向后兼容，无需迁移）。`IT_QUERY_FIELD_KEY` 与 `IT_AUTH_SUBJECT_SALT` 一样属于密钥，生产环境必须配置且建议存入 Secret Manager；轮换密钥时需对存量记录做一次重加密。
 
 每个用户每日查询次数受 `IT_QUERY_DAILY_QUOTA`（默认 1000）限制，按 UTC 自然日重置；超限返回 `HTTP 429` 并带 `Retry-After`（距次日 UTC 零点秒数）与 `X-RateLimit-Limit`/`X-RateLimit-Remaining` 头。`development` 认证模式与匿名/空主体跳过限流（本地离线演示不受影响）。计数进程内维护、重启清零，适用于单实例部署。
+
+### 文档保留期（先软后硬）
+
+文档超过 `IT_RETENTION_DAYS`（默认 365 天）后进入保留期末尾：保留期清理任务先在 `documents` 表打上 `expired_at` 软标记（记录仍可恢复，满足合规留痕），再经过 `IT_RETENTION_GRACE_DAYS`（默认 30 天）宽限期后物理删除该文档及其全部子表（`document_versions`/`document_chunks`/`document_acl`/`ingestion_jobs`/`document_version_reviews`/`model_usage_ledger`/`evaluation_runs` 等），从而回收存储。保留范围仅限文档主表及其级联子表，不影响查询记录与审计事件。
+
+清理由管理端触发或 cron 调用：`GET /api/admin/retention/preview` 预览将要软标记/硬删的数量（需 `audit.read`，自身计入审计），`POST /api/admin/retention/purge`（`{"stage": "soft"|"hard"|"both"}`，默认 `both`，需 `document.write`）执行；`scripts/purge_expired.py` 是 cron 入口，幂等可重复运行。
 
 管理后台切换到本地模型时，会先执行一次真实的短请求：Ollama 会调用 `/api/generate` 将目标模型加载并确认它出现在 `/api/ps`；llama.cpp 会调用兼容的 `/chat/completions`。探活失败不会保存新配置，系统状态页会显示“服务不可达 / 模型未安装 / 尚未启动 / 已启动”。Ollama 可用 `ollama serve` 启动服务，llama.cpp 需先运行自己的 `llama-server`（默认 `127.0.0.1:8080`）。
 
