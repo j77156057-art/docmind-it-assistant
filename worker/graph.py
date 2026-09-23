@@ -77,7 +77,12 @@ def build_indexing_graph(*, service, database, checkpointer):
 
     def prepare(state: IndexingState) -> dict:
         version_id = int(state["version_id"])
-        parsed, chunks = service.parse_and_chunk(state["source_path"])
+        # Same fallback as the synchronous path: the title resolved at import, not the stored
+        # (version-prefixed) source file name.
+        parsed, chunks = service.parse_and_chunk(
+            state["source_path"],
+            fallback_title=database.document_title(int(state.get("document_id") or 0)),
+        )
         database.mark_document_version_processing(
             version_id, title=parsed.title, mime_type=parsed.mime_type,
         )

@@ -616,6 +616,17 @@ class QueryDatabase:
         with self._sessions() as session:
             return int(self._version_row(session, document_id, version).id)
 
+    def document_title(self, document_id: int) -> str:
+        """The document's current title, used as the parser's fallback while indexing.
+
+        The import boundary already resolves a title (the operator's value, else the uploaded
+        filename). Indexing has to carry that value through instead of deriving a fresh one from the
+        stored source file, whose name is version-prefixed and would surface as ``v1-<name>``.
+        """
+        with self._sessions() as session:
+            row = session.get(DocumentRecord, int(document_id))
+            return str(row.title or "") if row is not None else ""
+
     def document_version_reference(self, version_id: int) -> dict:
         """Resolve a version id to the document id and version number (for the worker)."""
         with self._sessions() as session:

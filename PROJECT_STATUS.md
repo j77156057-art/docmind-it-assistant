@@ -25,6 +25,7 @@
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 并发连接池的有界性回归：`tests/test_connection_pool.py` 在 CI 的 PostgreSQL 上以 64 并发 × 128 次写请求（`POST /api/query`）断言「全部 200、峰值连接占用 > `pool_size`、峰值 ≤ `pool_size + max_overflow`、`queries` 行数等于请求数」，覆盖 `async def`→`def` 之后连接池的真实行为；实测数字以 CI artifact 留存（决策 C 的证据，非门禁）。
 - 黄金集检索评测 harness 可移植 + 真设门：语料改用仓库相对路径 + 逻辑根（新增 `scripts/golden_paths.py`，解析顺序 `--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录），根缺失时该 repo **整组跳过并记入报告**（绝不按 0 分参与统计）；脚本在「测不到任何东西」时退出码为 1，堵住了 CI 曾出现的「全 0 分却发绿」；CI 以 `--gate-mode block` 运行，本仓库那一半低于阈值即失败。
+- 文档标题一致性：异步索引不再用存储文件名（`v1-<name>`）覆盖导入时解析出的标题。根因是 `parse_and_chunk` 没接收标题（同步的 `import_file` 一直传），于是同一个上传在同步、Worker、LangGraph 三条路径下得到两个不同的标题。现由 `document_title()` 读回 `documents.title` 作为解析器的兜底，三条路径一致；`tests/test_ingestion_jobs.py::test_worker_indexing_keeps_the_title_resolved_at_import` 固定该行为（有标题时保留、无标题时落回上传文件名而不是 `v1-` 前缀）。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 
 ## 安全边界

@@ -153,11 +153,18 @@ class DocumentIngestionService:
         )
         return {**result, "title": normalized_title}
 
-    def parse_and_chunk(self, source_path: str | Path):
-        """Parse and chunk a stored original. Shared by the synchronous and graph paths."""
+    def parse_and_chunk(self, source_path: str | Path, *, fallback_title: str = ""):
+        """Parse and chunk a stored original. Shared by the synchronous and graph paths.
+
+        ``fallback_title`` is the title the import boundary already resolved (the operator's value,
+        else the uploaded filename). The parser uses it before falling back to the stored file name.
+        Not passing it is exactly why an asynchronously indexed document used to lose the title the
+        operator typed and come back as ``v1-<filename>``: the synchronous ``import_file`` path has
+        always passed it, so the two paths disagreed.
+        """
         try:
             parsed = parse_document(
-                Path(source_path), title="", max_bytes=self.max_bytes,
+                Path(source_path), title=fallback_title, max_bytes=self.max_bytes,
                 max_characters=self.max_characters, max_pages=self.max_pages,
             )
             chunks = chunk_document(
@@ -200,7 +207,9 @@ class DocumentIngestionService:
         Raises ``DocumentProcessingError`` with an explicit retryability flag: content and
         configuration problems must not burn the retry budget.
         """
-        parsed, chunks = self.parse_and_chunk(source_path)
+        parsed, chunks = self.parse_and_chunk(
+            source_path, fallback_title=self.database.document_title(document_id),
+        )
         try:
             self.database.mark_document_version_processing(
                 version_id, title=parsed.title, mime_type=parsed.mime_type,

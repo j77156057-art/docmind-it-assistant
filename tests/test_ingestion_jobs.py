@@ -63,13 +63,14 @@ class IngestionJobTests(unittest.TestCase):
 
     @staticmethod
     def import_document(client: TestClient, headers: dict[str, str], *,
-                        content: str = CONTENT, filename: str = "printer.md",
+                        content: str = CONTENT, filename: str = "printer.md", title: str = "",
                         source_key: str = "manual/printer", access_scope: str = "public"):
         return client.post(
             "/api/admin/documents/import",
             headers=headers,
             files={"file": (filename, content.encode("utf-8"), "text/markdown")},
             data={
+                "title": title,
                 "source_key": source_key,
                 "access_scope": access_scope,
                 "classification": "internal",
@@ -429,6 +430,45 @@ class IngestionJobTests(unittest.TestCase):
             finally:
                 worker_database.dispose()
                 database.dispose()
+
+    def test_worker_indexing_keeps_the_title_resolved_at_import(self):
+        """The asynchronous path must not re-derive the title from the stored source file name.
+
+        The stored original is version-prefixed (``v1-<name>``), so deriving from it published
+        ``v1-printer`` as the document title and silently discarded whatever the operator typed.
+        ``import_file`` (the synchronous path) has always passed the resolved title through; this
+        asserts the queued path agrees with it.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            settings = self.make_settings(root)
+            application = create_admin_app(settings)
+            editor = self.headers("editor-1", "knowledge_editor")
+            embeddings = EmbeddingClient(
+                mode="hash", provider="builtin", model="hash-1024",
+                base_url="http://hash.local", api_key="test",
+            )
+            with TestClient(application) as client:
+                titled = self.import_document(
+                    client, editor, source_key="manual/titled", title="打印机故障处理手册",
+                )
+                untitled = self.import_document(
+                    client, editor, source_key="manual/untitled", filename="printer-guide.md",
+                )
+                self.assertEqual(titled.status_code, 202, titled.text)
+                self.assertEqual(untitled.status_code, 202, untitled.text)
+
+            worker, worker_database = self.worker_with_client(settings, embeddings)
+            try:
+                self.assertEqual(worker.drain(), 2)
+                titles = {
+                    row["source_key"]: row["title"] for row in worker_database.list_documents()
+                }
+                self.assertEqual(titles["manual/titled"], "打印机故障处理手册")
+                # No title supplied: the import boundary falls back to the uploaded filename, and
+                # indexing has to keep that rather than expose the stored `v1-` prefix.
+                self.assertEqual(titles["manual/untitled"], "printer-guide")
+            finally:
+                worker_database.dispose()
 
     def test_reindex_and_withdraw_jobs_succeed(self):
         """reindex re-embeds an indexed version in place; withdraw takes it offline with an audit trail."""
