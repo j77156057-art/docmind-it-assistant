@@ -23,7 +23,7 @@
 - 部署编排包含索引 Worker：`scripts/dev.ps1` 启停三个服务（查询/管理/Worker），`compose.yaml` 增加 `worker` 服务并在管理服务与管理端共享 `docmind_sources` 卷、独立 `docmind_worker` 卷保存 checkpoint。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 并发连接池的有界性回归：`tests/test_connection_pool.py` 在 CI 的 PostgreSQL 上以 64 并发 × 128 次写请求（`POST /api/query`）断言「全部 200、峰值连接占用 > `pool_size`、峰值 ≤ `pool_size + max_overflow`、`queries` 行数等于请求数」，覆盖 `async def`→`def` 之后连接池的真实行为；实测数字以 CI artifact 留存（决策 C 的证据，非门禁）。
-- 黄金集检索评测 harness 可移植：语料改用仓库相对路径 + 逻辑根（新增 `scripts/golden_paths.py`，解析顺序 `--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录），根缺失时该 repo **整组跳过并记入报告**（绝不按 0 分参与统计）；脚本在「测不到任何东西」时退出码为 1，堵住了 CI 曾出现的「全 0 分却发绿」。
+- 黄金集检索评测 harness 可移植 + 真设门：语料改用仓库相对路径 + 逻辑根（新增 `scripts/golden_paths.py`，解析顺序 `--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录），根缺失时该 repo **整组跳过并记入报告**（绝不按 0 分参与统计）；脚本在「测不到任何东西」时退出码为 1，堵住了 CI 曾出现的「全 0 分却发绿」；CI 以 `--gate-mode block` 运行，本仓库那一半低于阈值即失败。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 
 ## 安全边界
@@ -116,9 +116,10 @@ Linux checkout 里这些路径全部不存在 → 语料为空 → 每题检索�
 比直接跳过更危险。根不存在时该 repo 整组跳过，并在报告里留下 `skipped` 与「找过哪些位置」。
 
 同时给脚本加了**测量护栏**（与门禁模式无关，退出码 1）：任一文档缺失、导入失败、某 repo 一卷文档都没
-索引成功、或**没有任何 repo 可运行**。门禁模式仍按既定设计保持 `warn`（只暴露弱库、不阻断发布；
-`--gate-mode block` 可切换为硬门禁）。同一提交顺带修掉 `scripts/_diag_citation.py`（内部诊断）里同样的
-绝对路径读取。
+索引成功、或**没有任何 repo 可运行**。门禁模式：脚本默认仍是 `warn`（与 `IT_EVAL_GATE_MODE` 默认一致，
+本机跑两库时不会因为 rag-agent 偏低而阻断），**CI 显式传 `--gate-mode block`** —— 本仓库那一半必须过阈值
+（recall@5 ≥ 0.8、引用命中率 ≥ 0.5、忠实度 ≥ 0.7），否则该 job 失败：一个跑不起来就会红、质量回退也会
+红的门，才叫门。同一提交顺带修掉 `scripts/_diag_citation.py`（内部诊断）里同样的绝对路径读取。
 
 2026-09-23 本机复测（SQLite + hash embedding，HEAD `a54c20c`）：
 
@@ -128,7 +129,10 @@ Linux checkout 里这些路径全部不存在 → 语料为空 → 每题检索�
 | docmind-it-assistant | 0.8571 | **0.7143**（0.4762） | **`pass`** |
 
 CI 只评测本仓库那一半（21 题 / 7 篇文档）；rag-agent 的语料是开发机上的同级目录，不做 vendor，
-在 CI 里按 SKIPPED 记录，因此不会以 0 分污染指标。
+在 CI 里按 SKIPPED 记录，因此不会以 0 分污染指标。CI 真 PG 实测（run `35816968938`）与上表**主指标完全一致**：
+docmind `recall@5 0.8571` / 引用命中率 `0.7143`（strict 0.5238）/ 忠实度 1.0 → `pass`，`below_threshold=0`
+→ 两条检索路径（SQLite portable 全表扫描 与 PG pgvector + tsvector RRF）在这份语料上给出同一结论，
+仅 strict 口径有微小差（本地 0.4762 / CI 0.5238）。CI 自本次起以 `--gate-mode block` 运行。
 
 `scripts/_*.py`（如 `_diag_citation.py`、`_diff_golden.py`、`_run_tests.py`）是内部诊断脚本，
 **不是生产入口**，不参与部署；`scripts/check_suite_completeness.py` 与 `scripts/check_run_log.py` 是一对护栏，分工互补：
