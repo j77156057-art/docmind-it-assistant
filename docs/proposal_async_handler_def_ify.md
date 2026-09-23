@@ -166,7 +166,7 @@ FastAPI 对 `def`（同步）路由 handler 会经 `starlette.concurrency.run_in
 
 ## 9.1 决策 C 实测补充（2026-09-23）
 
-> 目的：把决策 C「要不要调池尺寸」从"凭推断"变成"有实测判据"。**不改变本次已推送的代码**（`d2339ef` 已闭环，CI run `35781968760` success），只补观测口径与一处事实更正。
+> 目的：把决策 C「要不要调池尺寸」从"凭推断"变成"有实测判据"。**不改变本次已推送的代码**（`d2339ef` 已闭环，CI run `35781968760` success），只补观测口径、一处事实更正，以及随后落地的 CI 回归（见 §六）。
 
 ### 一、事实更正：线程上限是 **40**，不是 32
 
@@ -227,4 +227,14 @@ FastAPI 对 `def`（同步）路由 handler 会经 `starlette.concurrency.run_in
 ### 五、证据留存
 
 探针脚本与原始输出在 **`D:/Temp/dm_probe/`**（`probe_c.py` 压测矩阵、`probe_c2.py` 单变量控制实验、`probe_c.out` / `probe_c2.out`），**不在仓库内**，工作树保持干净。本节所有数字均来自这两个脚本的实跑。
+
+### 六、已落地：池侧观测的自动化回归（2026-09-23，`tests/test_connection_pool.py`）
+
+本地探针只覆盖线程侧；池侧此前只能靠人工观测。现已把「池容量是并发上界」做成 CI 上的断言：
+
+- `PostgresConnectionPoolTests`（需 `IT_TEST_POSTGRES_URL`，CI 的 `pgvector/pgvector:pg17` service 提供）对**可丢弃的 PG 库**（自建自毁 + `alembic upgrade head`）发 **64 并发 × 128 次 `POST /api/query` 写请求**，断言：① 全部 200；② 峰值同时占用连接数 **> `pool_size`**（溢出槽真的被用上）；③ 峰值 **≤ `pool_size + max_overflow`**（池是并发上界）；④ `queries` 行数 == 请求数（并发下无写丢失）。
+- 池尺寸刻意设为 `pool_size=3` / `max_overflow=5`，容量 8 **远小于** anyio 令牌 40 —— 这样测的是**池**而不是线程限制器；顺序反了就测不到池。
+- 实测数字（池形状、峰值占用、HTTP 与 SQL 延迟分位、超 `IT_SLOW_DB_MS` 阈值的语句数）作为 CI artifact **`pool-concurrency-report`** 上传，**是证据不是门禁**：CI 里不做延迟断言，墙钟阈值只会变成 flaky 门禁。
+- 同文件的 `SqlitePoolShapeTests` 在无 PG 时也运行，固定「sqlite 分支不向 `create_engine` 传 `pool_size`/`max_overflow`、得到 `NullPool`」这一事实（§二 的结构性依据），防止它悄悄失效。
+- 据此 `PROJECT_STATUS.md` 的「并发能力：未验证」已改写为「**池的有界性**已在 CI 上验证，**容量**仍未验证」——测出的 rps/延迟是单进程 + `TestClient` + 极小数据的数字，不可当容量用。
 

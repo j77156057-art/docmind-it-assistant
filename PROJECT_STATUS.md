@@ -1,6 +1,6 @@
 # Project Status
 
-更新日期：2026-09-22
+更新日期：2026-09-23
 
 ## 已完成
 
@@ -22,6 +22,7 @@
 - 评测门引用判定双轨制：`citation_ok_relaxed`（top-k 内任一同源 chunk 章节命中）作为门禁信号，`citation_ok_strict`（首命中 chunk）仅作审计口径；忠实度改为对真实生成答案打分（修复恒 ≈1.0 无鉴别力）。42 题黄金集实测两库 relaxed 引用命中率 rag-agent 0.476 / docmind 0.667、strict 0.333 / 0.476。据此将 `IT_EVAL_MIN_CITATION_ACCURACY` 由 0.9 重定为 **0.5**——0.9 在 relaxed 口径下结构性不可达（两库恒 warn、门禁失信号），旧 baseline 一次性作废；0.5 下 docmind 通过、rag-agent 低于栏被 warn 标记（门禁默认 `warn` 不阻断发布，仅持续暴露弱库待 §4 切分/去重改善）。
 - 部署编排包含索引 Worker：`scripts/dev.ps1` 启停三个服务（查询/管理/Worker），`compose.yaml` 增加 `worker` 服务并在管理服务与管理端共享 `docmind_sources` 卷、独立 `docmind_worker` 卷保存 checkpoint。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
+- 并发连接池的有界性回归：`tests/test_connection_pool.py` 在 CI 的 PostgreSQL 上以 64 并发 × 128 次写请求（`POST /api/query`）断言「全部 200、峰值连接占用 > `pool_size`、峰值 ≤ `pool_size + max_overflow`、`queries` 行数等于请求数」，覆盖 `async def`→`def` 之后连接池的真实行为；实测数字以 CI artifact 留存（决策 C 的证据，非门禁）。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 
 ## 安全边界
@@ -61,13 +62,32 @@ node --check web/admin.js
 .venv\Scripts\python -m pip check
 ```
 
-### 并发能力：未验证
+### 并发能力：池的**有界性**已在 CI 上验证，容量仍未验证
 
 此前本文件把并发表述为「已验证」，那是过度声称。`tests/test_stress_concurrency.py` 只有一个用例，
 打的是只读端点 `GET /api/runtime/model`，8 线程 × 16 次，**不经过 SQLAlchemy**，所以它既证明不了
 事件循环不被阻塞，也证明不了连接池在竞争下不退化——它真正断言的只有「并发请求全部 200 且指标计数不漏」。
 `scripts/bench_concurrency.py` 是人工触发的离线压测脚本，产出的是供人工判读的延迟/吞吐数字，**不是门禁**。
-因此在有写路径 + 真实连接池的并发压测落地之前，并发能力一律按**未验证**对待。
+
+**新增 `tests/test_connection_pool.py`**，用 64 并发 × 128 次写请求（`POST /api/query`，真实走
+SQLAlchemy 写路径）断言四件事：
+
+1. 所有请求返回 200 —— 池耗尽会在这里以 500 的形式暴露；
+2. 峰值同时占用的连接数 **> `pool_size`** —— 溢出槽真的被用上，说明确实发生了争用，而非被意外串行化；
+3. 峰值 **≤ `pool_size + max_overflow`** —— **池是并发上界**，超出容量的请求在等连接，而不是压向数据库；
+4. `queries` 行数恰好等于请求数 —— 并发下没有写丢失或重复。
+
+第 3 条把 proposal §5 里「有界、可观测」的说法从推断变成了断言。实测数字（池形状、峰值占用、HTTP 与
+SQL 延迟分位、超 `IT_SLOW_DB_MS` 阈值的语句数）写入 CI artifact `pool-concurrency-report`，供决策 C 判读；
+它们**是证据、不是门禁**——CI 里不做延迟断言，墙钟阈值会变成 flaky 门禁而不是证据。
+
+该模块**仅在设置了 `IT_TEST_POSTGRES_URL` 时**跑并发用例（CI 的 `pgvector/pgvector:pg17` service 提供），
+无该变量时只跑 `SqlitePoolShapeTests`：它固定「SQLite 分支不向 `create_engine` 传
+`pool_size`/`max_overflow`、拿到的是 `NullPool`」这一事实，也就是决策 C 在开发机上无法观测池侧的**结构性原因**
+（`backend/database.py` 的 sqlite 分支 vs postgresql 分支）。
+
+仍然**未验证**：吞吐与容量（单进程 + `TestClient` + 极小数据，测出的 rps / p50 不可当容量用）、多 worker
+行为、真实延迟目标。因此并发能力只按「**池容量是并发上界**」这一条算已验证，其余一律按未验证对待。
 
 ### 文档 ↔ 验证 harness 契约漂移
 
@@ -88,7 +108,7 @@ node --check web/admin.js
 后者源于一次实测：全量 pytest 曾打出 `Windows fatal exception: access violation`（栈在 SQLite DDL），
 却仍报 `223 passed` 且 exit 0——所以「门禁发绿」不等于「跑得干净」。两者均已挂进 CI。
 
-当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验；`tests/test_oidc_login.py` 用 stub IdP（真实 RSA 密钥 + `httpx.MockTransport`）覆盖 PKCE(S256) 挑战、state/nonce 绑定、HS256 算法混淆拒绝、错误签名与端点发现缓存；`tests/test_audit_export.py` 覆盖 CSV/JSON 导出、时间/动作筛选、viewer 无 `audit.read` 被 403、非法格式 400 与导出动作自审计留痕；`tests/test_ingestion_backoff.py` 覆盖行内 `next_attempt_at` 指数退避与退避上限，`tests/test_metrics.py` 覆盖 `audit.read` 读取指标快照、viewer 被 403 与注册表线程安全，`tests/test_stress_concurrency.py` 只读地覆盖「8 线程 × 16 次并发 `GET /api/runtime/model` 全部 200 且指标计数不漏」（不构成并发能力验证，见下文），`tests/test_field_encryption.py` 覆盖 `query.question` 字段级加解密、旧明文回退与生产必配 `IT_QUERY_FIELD_KEY` 校验；`tests/test_retention.py` 覆盖文档保留期软标记/硬删/级联/宽限期与端点鉴权+自审计。
+当前测试覆盖查询/管理隔离、OIDC、RBAC、主体数据隔离、文档 ACL、文档密级、文档解析、版本去重、混合检索、降级、模型网关、Token/费用账本、配置、迁移和日志隐私；`tests/test_document_classification.py` 覆盖密级只收紧的性质（机密对 `viewer` 不可见、ACL 与 clearance 是「与」条件、知识大纲不泄露机密标题、未知密级失败关闭、导入只能提升密级、`/api/query` 端到端只把引用给 auditor）；`tests/test_knowledge_governance.py` 覆盖治理状态机、职责分离、越权拦截、召回隔离与审批留痕；`tests/test_ingestion_jobs.py` 覆盖任务抢占唯一性、心跳回收、重试分类、确定性失败、202 异步导入与队列诊断；`tests/test_indexing_graph.py` 覆盖 checkpoint 断点续跑、staging 丢失后的重建与 schema 隔离，`tests/test_indexing_graph_postgres.py` 覆盖 PostgreSQL 路径（同一组性质，另加信息 schema 级别的"checkpoint 不落在 `public`"断言；仅在设置了 `IT_TEST_POSTGRES_URL` 时运行，CI 里由 `pgvector/pgvector` 服务提供，因为迁移 0003 依赖 `vector` 扩展）；`tests/test_isolation_boundary.py` 覆盖导入闭包、动态导入、反向导入与 Trace 开关；`tests/test_evaluation_gate.py` 覆盖指标计算、生产检索路径复用、`block` 阻断、越权放行留痕、基线回归、空题集与用例能力校验；`tests/test_oidc_login.py` 用 stub IdP（真实 RSA 密钥 + `httpx.MockTransport`）覆盖 PKCE(S256) 挑战、state/nonce 绑定、HS256 算法混淆拒绝、错误签名与端点发现缓存；`tests/test_audit_export.py` 覆盖 CSV/JSON 导出、时间/动作筛选、viewer 无 `audit.read` 被 403、非法格式 400 与导出动作自审计留痕；`tests/test_ingestion_backoff.py` 覆盖行内 `next_attempt_at` 指数退避与退避上限，`tests/test_metrics.py` 覆盖 `audit.read` 读取指标快照、viewer 被 403 与注册表线程安全，`tests/test_stress_concurrency.py` 只读地覆盖「8 线程 × 16 次并发 `GET /api/runtime/model` 全部 200 且指标计数不漏」（不构成并发能力验证，见下文），`tests/test_field_encryption.py` 覆盖 `query.question` 字段级加解密、旧明文回退与生产必配 `IT_QUERY_FIELD_KEY` 校验；`tests/test_retention.py` 覆盖文档保留期软标记/硬删/级联/宽限期与端点鉴权+自审计；`tests/test_connection_pool.py` 覆盖 PostgreSQL 上的连接池形状（`pool_size`/`max_overflow` 是否真的到达 `create_engine`）与并发写突发下的池上界（无 `IT_TEST_POSTGRES_URL` 时仅运行 SQLite 的池形状用例）。
 
 ## 后续工作
 

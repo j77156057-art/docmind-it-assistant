@@ -14,13 +14,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     # 15 minutes was too thin: a full pytest run measures ~9.5 minutes locally, and on CI the
-    # four PostgreSQL tests actually execute (instead of skipping), on top of image pull,
+    # five PostgreSQL tests actually execute (instead of skipping), on top of image pull,
     # service startup and dependency installation.
     timeout-minutes: 25
 
     # The worker's LangGraph checkpointer behaves differently on PostgreSQL than on SQLite
     # (separate schema, psycopg connection). tests/test_indexing_graph_postgres.py exercises
     # that path and skips itself when IT_TEST_POSTGRES_URL is absent.
+    #
+    # tests/test_connection_pool.py also needs the service: it proves the configured
+    # pool_size/max_overflow reach create_engine and that the pool bounds a concurrent write
+    # burst, which is unobservable on SQLite (no pool there at all).
     #
     # The image must carry pgvector: migration 0003 runs `CREATE EXTENSION IF NOT EXISTS vector`,
     # so a plain `postgres` image fails with "extension vector is not available". This mirrors
@@ -61,6 +65,10 @@ jobs:
           # The integration test creates and drops its own disposable database on this server,
           # so the role needs CREATEDB (the postgres image's superuser role has it).
           IT_TEST_POSTGRES_URL: postgresql+psycopg://docmind:change-me@127.0.0.1:5432/docmind_it
+          # Written by tests/test_connection_pool.py and uploaded below. The numbers are the
+          # evidence behind decision C in docs/proposal_async_handler_def_ify.md §9.1 (whether
+          # the DB pool needs raising); they are deliberately an artifact, not an assertion.
+          IT_POOL_REPORT: pool_concurrency_report.json
         # pytest (not `unittest discover`): the suite mixes unittest.TestCase with pytest-style
         # modules, and unittest discover only collects the former — leaving 24 tests (field
         # encryption, rate limiting, reranking) silently unexecuted. `-rs` prints skip reasons
@@ -74,6 +82,15 @@ jobs:
           set -o pipefail
           python -B -m pytest -q -rs -p no:cacheprovider tests 2>&1 | tee pytest-output.log
           python -B scripts/check_run_log.py pytest-output.log
+      # Kept even when the suite fails: the pool numbers are most interesting in exactly that
+      # case (a burst that exhausted the pool shows up as 500s and a saturated peak).
+      - name: Upload pool concurrency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pool-concurrency-report
+          path: pool_concurrency_report.json
+          if-no-files-found: ignore
       - name: Check Python and JavaScript syntax
         run: |
           python -m compileall -q app.py admin_app.py assistant backend ingestion migrations tests worker
