@@ -692,6 +692,10 @@ class QueryDatabase:
             "locked_by": row.locked_by,
             "created_by_subject_id": row.created_by_subject_id,
             "request_id": row.request_id,
+            # The payload carries per-type arguments (the import filename, a withdraw reason, the
+            # trigger for an asynchronous evaluation). It used to be written but never read back,
+            # so every consumer silently fell through to its own default.
+            "payload": dict(row.payload or {}),
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "finished_at": row.finished_at.isoformat() if row.finished_at else None,

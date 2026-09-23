@@ -17,7 +17,7 @@ from sqlalchemy import update
 
 from admin_app import create_admin_app
 from backend import (
-    AppSettings, DocumentSourceStore, GovernanceError, QueryDatabase, build_embedding_client,
+    AppSettings, DocumentSourceStore, GovernanceError, QueryDatabase,
 )
 from backend.db_models import IngestionJobRecord
 from backend.embeddings import EmbeddingClient
@@ -393,18 +393,21 @@ class IngestionJobTests(unittest.TestCase):
                 database = QueryDatabase(settings.database_url)
                 database.dispose()
 
-    def test_unsupported_job_type_and_missing_source_fail_terminally(self):
+    def test_mistargeted_jobs_fail_terminally(self):
         with tempfile.TemporaryDirectory() as root:
             settings = self.make_settings(root)
             database = QueryDatabase(settings.database_url)
             database.initialize()
             worker, worker_database = build_worker(settings)
             try:
-                # A job type that no worker implements yet must fail loudly, not silently succeed.
+                # An evaluation without a version has no gate to attach its verdict to. The job
+                # types a worker *does* implement are covered in tests/test_evaluation_job.py; the
+                # remaining guard is for a type reaching a worker that was never taught it, which
+                # the CHECK constraint keeps unreachable today.
                 database.enqueue_ingestion_job(job_type="evaluate", document_id=None)
                 outcome = worker.run_once()
                 self.assertEqual(outcome["status"], "failed")
-                self.assertEqual(outcome["error_code"], "job_type_unsupported")
+                self.assertEqual(outcome["error_code"], "job_target_missing")
 
                 # A version registered without a stored original cannot be indexed.
                 version = database.begin_document_import(

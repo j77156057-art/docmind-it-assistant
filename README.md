@@ -156,7 +156,7 @@ IT_QUERY_FIELD_KEY=<至少 16 字符的随机值或 Fernet 密钥>
 | `GET` | `/api/admin/evaluation/cases` | `document.read` | 查看黄金题与门禁阈值 |
 | `PUT` | `/api/admin/evaluation/cases` | `evaluation.run` | 新增或更新黄金题（按 `case_key` 覆盖） |
 | `DELETE` | `/api/admin/evaluation/cases/{id}` | `evaluation.run` | 删除从未被评测引用的用例（有历史则 409） |
-| `POST` | `/api/admin/evaluation/runs` | `evaluation.run` | 立即运行评测（`manual` / `pre_publish`） |
+| `POST` | `/api/admin/evaluation/runs` | `evaluation.run` | 立即运行评测（`manual` / `pre_publish`）；带 `"queue": true` 则入队为 `evaluate` 任务并返回 202 |
 | `GET` | `/api/admin/evaluation/runs` | `document.read` | 查看评测运行与门禁结论 |
 | `GET` | `/api/admin/evaluation/runs/{id}` | `document.read` | 查看逐题结果 |
 | `GET` | `/api/admin/citations` | auditor | 查看回答引用来源（chunk / knowledge 两种形态） |
@@ -446,10 +446,9 @@ node --check web/admin.js
 
 ## 当前限制
 
-- 异步 Worker 目前只实现 `import` 任务类型：`reindex` / `withdraw` / `evaluate` 会在任务表里显式失败（`job_type_unsupported`），不会静默跳过。
-- 可重试失败的重排没有持久化退避时间（`next_attempt_at`）；当前退避只在 Worker 进程内生效。
+- 异步 Worker 已实现全部四种任务类型：`import` / `reindex` / `withdraw` / `evaluate`。`evaluate` 用 `POST /api/admin/evaluation/runs` 加 `"queue": true` 入队（返回 202 + job），异步跑完黄金集并把门禁结论写在评测运行记录上；只有**无法执行**时才把任务判失败（缺版本、题集不可用、触发器非法）——指标不达标是测量结果，不是任务失败。
 - LangGraph 的 PostgreSQL checkpoint 路径由 `tests/test_indexing_graph_postgres.py` 覆盖：CI 拉起 `pgvector/pgvector` 服务（与 `compose.yaml` 同镜像家族，迁移 0003 需要 `vector` 扩展），断言独立 schema 建表、续跑不重复计费、以及 checkpoint 不进入应用 schema（`alembic` 看不到）。本机没有 PostgreSQL 时该模块自动跳过；SQLite 路径由 `tests/test_indexing_graph.py` 覆盖。
-- 发布前评测在发布请求内**同步整跑**黄金题：题集很大时发布会变慢，`evaluate` 任务类型虽已声明但尚未实现异步评测。
+- 发布前评测仍在发布请求内**同步整跑**黄金题（`trigger=pre_publish`）：题集很大时发布会变慢。异步 `evaluate` 任务已可用（见上条），但**发布路径尚未改为消费已排队/已完成的评测结论**——若没有新鲜评测，是阻断发布还是就地现跑，属于单独需要拍板的取舍。
 - 办公产物保存在本地目录，尚未接入对象存储、保留策略和审批发布。
 - Web 前端已实现 OIDC Authorization Code + PKCE 浏览器登录：`/api/auth/oidc/start` 发起授权、`/api/auth/oidc/callback` 换码并发放会话 Cookie；端点默认走 `<issuer>/.well-known/openid-configuration` 自动发现，可用 `IT_OIDC_*_ENDPOINT` 覆盖。真实身份提供商的联调仍需部署方配置（本仓库仅用 stub IdP 覆盖单测分支，端到端联调见 `tests/test_oidc_login.py` 注释）。
 - 检索重排已上线并默认开启（`rerank_enabled`，`rerank_mode=lexical`），但只对父子分块（`chunk_child_max_chars`，默认 400）生效；`api` 模式需要外部重排服务，本仓库未内置。

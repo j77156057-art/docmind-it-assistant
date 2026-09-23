@@ -22,9 +22,10 @@ from starlette.concurrency import run_in_threadpool
 
 from backend import (
     OIDC_FLOW_COOKIE, OIDC_FLOW_SECONDS, SESSION_COOKIE,
-    AppSettings, AuthenticationError, EmbeddingClient, EvaluationError, EvaluationService,
-    GovernanceError, HybridRetriever, OIDCAuthenticator, Principal, DocumentSourceStore, build_reranker,
+    AppSettings, AuthenticationError, EmbeddingClient, EvaluationError,
+    GovernanceError, OIDCAuthenticator, Principal, DocumentSourceStore,
     ModelRouter, ModelRuntime, ModelRuntimeError, QueryDatabase, build_embedding_client,
+    build_evaluation_service,
     configure_logging, log_event, normalize_classification, request_id_context,
 )
 from backend.metrics import get_metrics
@@ -133,6 +134,10 @@ class EvaluationCaseReq(BaseModel):
 class EvaluationRunReq(BaseModel):
     trigger: Literal["manual", "pre_publish", "scheduled"] = "manual"
     document_version_id: int | None = None
+    # Queue the run as an `evaluate` job (202 + job) instead of executing it inside this request.
+    # Only per-version runs can be queued: the queue identifies a job by (job_type, version_id),
+    # so a corpus-wide run has no key to be deduplicated on and stays synchronous.
+    queue: bool = False
 
 
 def create_admin_app(settings: AppSettings | None = None,
@@ -200,14 +205,8 @@ def create_admin_app(settings: AppSettings | None = None,
     )
     sources = DocumentSourceStore(config.project_root / "data" / "sources")
     runtime = model_runtime or ModelRuntime(timeout_seconds=max(60.0, config.model_timeout_seconds))
-    evaluations = EvaluationService(
-        settings=config,
-        database=database,
-        retriever=HybridRetriever(
-            database, embeddings, top_k=config.evaluation_top_k,
-            reranker=build_reranker(config), rerank_candidate_limit=config.rerank_top_n,
-        ),
-        embeddings=embeddings,
+    evaluations = build_evaluation_service(
+        settings=config, database=database, embeddings=embeddings,
     )
 
     @asynccontextmanager
@@ -933,6 +932,41 @@ def create_admin_app(settings: AppSettings | None = None,
             and payload.document_version_id is None
         ):
             raise HTTPException(status_code=400, detail="发布前评测必须指定文档版本")
+        if payload.queue:
+            if payload.document_version_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="异步评测必须指定文档版本：任务队列以 (类型, 版本) 唯一标识一个任务",
+                )
+            try:
+                reference = database.document_version_reference(payload.document_version_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from None
+            try:
+                job = database.enqueue_ingestion_job(
+                    job_type="evaluate",
+                    document_id=reference["document_id"],
+                    version_id=payload.document_version_id,
+                    # The trigger travels with the job so the stored run still records *why* it ran.
+                    # Asynchrony itself is an execution detail, and the job row is where it shows up.
+                    payload={"trigger": payload.trigger},
+                    created_by_subject_id=principal.subject_id,
+                    request_id=request_id,
+                    max_attempts=config.ingestion_max_attempts,
+                )
+            except GovernanceError as exc:
+                raise governance_http_error(exc) from None
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            database.record_audit_event(
+                actor_subject_id=principal.subject_id,
+                action="evaluation_run_queued",
+                target_type="ingestion_job",
+                target_ref=str(job["job_id"]),
+                result="success",
+                request_id=request_id,
+            )
+            return JSONResponse({"ok": True, "job": job}, status_code=202)
         try:
             run = evaluations.run(
                 trigger=payload.trigger,

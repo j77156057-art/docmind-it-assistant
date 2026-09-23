@@ -19,8 +19,9 @@ import time
 from collections.abc import Callable
 
 from .database import QueryDatabase
-from .embeddings import EmbeddingClient
+from .embeddings import EmbeddingClient, build_embedding_client
 from .logging_config import log_event, request_id_context
+from .rerank import build_reranker
 from .retrieval import HybridRetriever
 from .text_index import lexical_terms
 
@@ -334,6 +335,28 @@ class EvaluationService:
         return ("block" if mode == "block" else "warn"), reason
 
 
+def build_evaluation_service(*, settings, database: QueryDatabase,
+                             embeddings: EmbeddingClient | None = None) -> EvaluationService:
+    """Wire an ``EvaluationService`` the same way in every process that needs one.
+
+    The admin service runs the golden set synchronously when a version is published
+    (``trigger='pre_publish'``); the worker runs the same corpus as a queued ``evaluate`` job.
+    Both must assemble the retriever identically, otherwise the two paths would score the very
+    same corpus differently — which is exactly how a quality gate stops being trustworthy.
+    """
+    client = embeddings or build_embedding_client(settings)
+    return EvaluationService(
+        settings=settings,
+        database=database,
+        retriever=HybridRetriever(
+            database, client, top_k=settings.evaluation_top_k,
+            reranker=build_reranker(settings), rerank_candidate_limit=settings.rerank_top_n,
+        ),
+        embeddings=client,
+    )
+
+
 __all__ = [
     "EVALUATION_ROLES", "EVALUATION_SUBJECT", "EvaluationError", "EvaluationService",
+    "build_evaluation_service",
 ]

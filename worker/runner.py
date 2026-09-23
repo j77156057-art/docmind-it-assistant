@@ -11,7 +11,11 @@ import os
 import socket
 import time
 
-from backend import DocumentSourceStore, log_event, request_id_context
+from backend import (
+    DocumentSourceStore, EvaluationError, build_evaluation_service, log_event,
+    request_id_context,
+)
+from backend.db_models import EVAL_TRIGGERS
 from ingestion import DocumentProcessingError
 
 from .graph import StagingUnavailable
@@ -31,7 +35,7 @@ class IngestionWorker:
     """
 
     def __init__(self, *, settings, database, ingestion, sources: DocumentSourceStore,
-                 worker_id: str = "", engine: str = "", graph_runner=None):
+                 worker_id: str = "", engine: str = "", graph_runner=None, evaluations=None):
         self.settings = settings
         self.database = database
         self.ingestion = ingestion
@@ -41,6 +45,19 @@ class IngestionWorker:
         )[:64]
         self.engine = (engine or settings.ingestion_engine or "simple").strip().lower()
         self._graph_runner = graph_runner
+        self._evaluations_service = evaluations
+
+    def _evaluations(self):
+        """Lazily build the evaluation service.
+
+        Built on first use so an indexing-only deployment never assembles a retriever, and wired
+        through the same factory as the admin service so both score the corpus identically.
+        """
+        if self._evaluations_service is None:
+            self._evaluations_service = build_evaluation_service(
+                settings=self.settings, database=self.database,
+            )
+        return self._evaluations_service
 
     def _runner(self):
         """Lazily build the graph runner so the core deployment never imports the framework."""
@@ -129,8 +146,12 @@ class IngestionWorker:
         try:
             if job["job_type"] == "withdraw":
                 return self._execute_withdraw(job)
+            if job["job_type"] == "evaluate":
+                return self._execute_evaluate(job)
             if job["job_type"] not in ("import", "reindex"):
-                # evaluate and any unknown type fail loudly rather than pretending to succeed.
+                # Unreachable while the CHECK constraint holds to the four known types, and kept
+                # so a future type reaching a worker that was never taught it fails loudly rather
+                # than being silently treated as an import.
                 raise DocumentProcessingError("job_type_unsupported", retryable=False)
             if not version_id or not job.get("document_id"):
                 raise DocumentProcessingError("job_target_missing", retryable=False)
@@ -165,6 +186,10 @@ class IngestionWorker:
             return self._record_failure(
                 job, "staging_missing", retryable=True, detail=type(exc).__name__,
             )
+        except EvaluationError as exc:
+            # The golden set could not be run at all (no active cases, a case this corpus cannot
+            # support). Retrying changes nothing, so it is terminal rather than a re-queue loop.
+            return self._record_failure(job, exc.code, retryable=False, detail=exc.detail)
         except ValueError as exc:
             return self._record_failure(
                 job, "job_target_missing", retryable=False, detail=str(exc),
@@ -202,7 +227,13 @@ class IngestionWorker:
             backoff_max_seconds=self.settings.ingestion_backoff_max_seconds,
         )
         version_id = job.get("version_id")
-        if version_id:
+        job_type = job.get("job_type") or "import"
+        # Only indexing jobs own the version's lifecycle state. A failed withdraw or evaluation
+        # never touched the index, so marking the version failed/queued as a side effect would
+        # damage an unrelated state machine — a published version would look un-indexed because a
+        # governance action or a measurement failed next to it.
+        indexing = job_type in ("import", "reindex")
+        if version_id and indexing:
             if outcome["status"] == "queued":
                 self.database.reset_document_version_for_retry(version_id)
             else:
@@ -210,9 +241,15 @@ class IngestionWorker:
         terminal = outcome["status"] == "failed"
         self.database.record_audit_event(
             actor_subject_id=(job.get("created_by_subject_id") or "system:worker")[:64],
-            action="document_index_failed",
-            target_type="document",
-            target_ref=f"{job.get('document_id')}:{job.get('version_id')}",
+            # The audit trail has to say what actually failed. Reporting every failed job as
+            # `document_index_failed` would describe a withdraw or an evaluation as an indexing
+            # failure, pointing the reader at the wrong document state.
+            action="document_index_failed" if indexing else f"{job_type}_job_failed",
+            target_type="document" if indexing else "ingestion_job",
+            target_ref=(
+                f"{job.get('document_id')}:{job.get('version_id')}" if indexing
+                else str(job["job_id"])
+            ),
             result="failed",
             request_id=job.get("request_id") or f"job-{job['job_id']}",
         )
@@ -229,6 +266,60 @@ class IngestionWorker:
             "error_code": code,
             "attempts": outcome["attempts"],
             "retryable": retryable,
+        }
+
+    def _execute_evaluate(self, job: dict) -> dict:
+        """Run the golden set and store the run, asynchronously.
+
+        A verdict of ``warn``/``block`` is a **successful** job. The measurement happened and its
+        result is stored on the run, which is where the publish gate and an operator read it;
+        failing the job would turn "the corpus scored low" into "the worker broke" — the opposite
+        of observable — and would stack retries that cannot change the verdict.
+
+        ``document_version_id`` attributes the run and its embedding usage. Retrieval itself is not
+        restricted to that version (``HybridRetriever.retrieve`` only uses the id for attribution),
+        which is deliberate and matches the synchronous pre-publish gate: the question is whether
+        the indexed corpus can answer the golden set at all.
+        """
+        job_id = job["job_id"]
+        version_id = job.get("version_id")
+        if not version_id:
+            raise DocumentProcessingError("job_target_missing", retryable=False)
+        trigger = str((job.get("payload") or {}).get("trigger") or "scheduled")
+        if trigger not in EVAL_TRIGGERS:
+            # The column has a CHECK constraint; failing here names the cause instead of surfacing
+            # an IntegrityError as a generic, retryable worker_error.
+            raise DocumentProcessingError("job_payload_invalid", retryable=False)
+        request_id = job.get("request_id") or f"job-{job_id}"
+        actor = (job.get("created_by_subject_id") or "system:worker")[:64]
+        self.database.heartbeat_ingestion_job(job_id, self.worker_id)
+        run = self._evaluations().run(
+            trigger=trigger,
+            document_version_id=int(version_id),
+            actor_subject_id=actor,
+            request_id=request_id,
+        )
+        self.database.complete_ingestion_job(job_id, self.worker_id)
+        self.database.record_audit_event(
+            actor_subject_id=actor,
+            action="evaluation_run",
+            target_type="evaluation_run",
+            target_ref=str(run["run_id"]),
+            result="success",
+            request_id=request_id,
+        )
+        log_event(
+            LOGGER, logging.INFO, "ingestion_job_evaluated",
+            job_id=job_id, run_id=run["run_id"], trigger=trigger,
+            gate_result=run.get("gate_result"), total_cases=run.get("total_cases"),
+            passed_cases=run.get("passed_cases"),
+        )
+        return {
+            "job_id": job_id,
+            "status": "succeeded",
+            "job_type": "evaluate",
+            "run_id": run["run_id"],
+            "gate_result": run.get("gate_result"),
         }
 
     def _execute_withdraw(self, job: dict) -> dict:

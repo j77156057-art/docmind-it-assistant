@@ -7,7 +7,7 @@ from .auth import (
 )
 from .database import GovernanceError, QueryDatabase
 from .document_sources import DocumentSourceError, DocumentSourceStore
-from .evaluation import EvaluationError, EvaluationService
+from .evaluation import EvaluationError, EvaluationService, build_evaluation_service
 from .embeddings import EmbeddingClient, EmbeddingError, EmbeddingResult, build_embedding_client
 from .logging_config import JsonFormatter, configure_logging, log_event, request_id_context
 from .model_gateway import GatewayAttempt, GatewayResult, ModelGateway, ModelGatewayError
@@ -28,7 +28,7 @@ __all__ = [
     "normalize_classification",
     "ModelRouter", "QueryDatabase", "PROVIDERS", "ProviderSpec",
     "DocumentSourceError", "DocumentSourceStore", "ModelRuntime", "ModelRuntimeError",
-    "EvaluationError", "EvaluationService",
+    "EvaluationError", "EvaluationService", "build_evaluation_service",
     "JsonFormatter", "configure_logging", "log_event", "request_id_context",
     "GatewayAttempt", "GatewayResult", "ModelGateway", "ModelGatewayError",
     "EmbeddingClient", "EmbeddingError", "EmbeddingResult", "build_embedding_client",
