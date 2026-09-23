@@ -20,11 +20,12 @@
 - 异步评测任务（`evaluate`）：`POST /api/admin/evaluation/runs` 加 `"queue": true` 入队（202 + job，需 `evaluation.run`），Worker 用与发布门禁**同一个** `build_evaluation_service()` 工厂跑黄金集，结论落在 `evaluation_runs` 上供发布门禁与运维读取。**指标不达标 = 任务成功**：测量发生了，判定写在运行记录里；失败只留给「无法执行」（缺版本 / 题集不可用 / 触发器非法）。顺带修掉任务队列接缝上的三处缺陷：①`_job_public` 从不回传 `payload`，withdraw 的理由与 evaluate 的触发器都被静默丢弃（一律落回默认值）；②失败路径对**所有**任务类型都重置/置败目标版本，会让 withdraw/evaluate 的失败把已索引版本改成 `failed`；③失败审计统一写成 `document_index_failed`，把作废/评测失败描述成索引失败。**这三处从未被生产路径触发过——此前 `reindex`/`withdraw`/`evaluate` 没有任何入队入口，只有测试直接入队，接缝因此没被端到端走过一遍。**
 - 可选 LangGraph 编排引擎：分批向量化 + checkpoint 断点续跑、独立 checkpoint 存储（不污染应用 schema）、从 `app.py` 出发的 import 闭包边界守卫；PostgreSQL 路径由 CI 上的集成测试覆盖（独立 schema、续跑、`alembic` 无差异）。
 - 发布前评测门：`evaluation_cases` / `evaluation_runs` / `evaluation_case_results`，复用生产检索路径的 recall@k、引用命中率、拒答正确率与基线回归，`off/warn/block` 三种门禁模式与 `override_gate` 留痕。
-- 评测门引用判定双轨制：`citation_ok_relaxed`（top-k 内任一同源 chunk 章节命中）作为门禁信号，`citation_ok_strict`（首命中 chunk）仅作审计口径；忠实度改为对真实生成答案打分（修复恒 ≈1.0 无鉴别力）。42 题黄金集实测两库 relaxed 引用命中率 rag-agent 0.476 / docmind 0.667、strict 0.333 / 0.476。据此将 `IT_EVAL_MIN_CITATION_ACCURACY` 由 0.9 重定为 **0.5**——0.9 在 relaxed 口径下结构性不可达（两库恒 warn、门禁失信号），旧 baseline 一次性作废；0.5 下 docmind 通过、rag-agent 低于栏被 warn 标记（门禁默认 `warn` 不阻断发布，仅持续暴露弱库待 §4 切分/去重改善）。
+- 评测门引用判定双轨制：`citation_ok_relaxed`（top-k 内任一同源 chunk 章节命中）作为门禁信号，`citation_ok_strict`（首命中 chunk）仅作审计口径；忠实度改为对真实生成答案打分（修复恒 ≈1.0 无鉴别力）。42 题黄金集实测两库 relaxed 引用命中率 rag-agent 0.476 / docmind 0.667、strict 0.333 / 0.476。据此将 `IT_EVAL_MIN_CITATION_ACCURACY` 由 0.9 重定为 **0.5**——0.9 在 relaxed 口径下结构性不可达（两库恒 warn、门禁失信号），旧 baseline 一次性作废；0.5 下 docmind 通过、rag-agent 低于栏被 warn 标记（门禁默认 `warn` 不阻断发布，仅持续暴露弱库待 §4 切分/去重改善）。**2026-09-23 更新**：那个"弱库"主要来自词法重排器的 IDF 缺陷（见「已完成」中的 IDF 修正），修复后本机复测 rag-agent relaxed 引用命中率 **0.619**、docmind **0.8571**，**两库均已过 0.5 栏**；上面的 0.476 / 0.667 是标定当时的数字，保留作为阈值依据。
 - 部署编排包含索引 Worker：`scripts/dev.ps1` 启停三个服务（查询/管理/Worker），`compose.yaml` 增加 `worker` 服务并在管理服务与管理端共享 `docmind_sources` 卷、独立 `docmind_worker` 卷保存 checkpoint。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 并发连接池的有界性回归：`tests/test_connection_pool.py` 在 CI 的 PostgreSQL 上以 64 并发 × 128 次写请求（`POST /api/query`）断言「全部 200、峰值连接占用 > `pool_size`、峰值 ≤ `pool_size + max_overflow`、`queries` 行数等于请求数」，覆盖 `async def`→`def` 之后连接池的真实行为；实测数字以 CI artifact 留存（决策 C 的证据，非门禁）。
 - 黄金集检索评测 harness 可移植 + 真设门：语料改用仓库相对路径 + 逻辑根（新增 `scripts/golden_paths.py`，解析顺序 `--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录），根缺失时该 repo **整组跳过并记入报告**（绝不按 0 分参与统计）；脚本在「测不到任何东西」时退出码为 1，堵住了 CI 曾出现的「全 0 分却发绿」；CI 以 `--gate-mode block` 运行，本仓库那一半低于阈值即失败。
+- 词法重排器 IDF 修正（检索质量）：`LexicalReranker` 原用「词在**本候选**里出现几次」当作 IDF，于是重复模板词被奖励、近乎全库出现的词与稀有词同权——一个只重复「打印」的章节会压过真正含「卡纸」的章节。改为标准做法：IDF 数**有多少候选含该词**。golden 两库复测：rag-agent 引用命中率 0.4762 → **0.619**（`warn` → **`pass`**）、docmind 0.7143 → **0.8571**、recall@5 0.8571 → **0.9524**，通过题数 10→13 / 16→18。长度归一化保留原样（仍用原始词数而非 /avgdl）：实测换成标准写法在 golden 上**零差异**，故未动，已在代码注释中记录。`tests/test_rerank.py::test_lexical_reranker_prefers_the_distinctive_term_over_boilerplate` 固定该行为。
 - 文档标题一致性：异步索引不再用存储文件名（`v1-<name>`）覆盖导入时解析出的标题。根因是 `parse_and_chunk` 没接收标题（同步的 `import_file` 一直传），于是同一个上传在同步、Worker、LangGraph 三条路径下得到两个不同的标题。现由 `document_title()` 读回 `documents.title` 作为解析器的兜底，三条路径一致；`tests/test_ingestion_jobs.py::test_worker_indexing_keeps_the_title_resolved_at_import` 固定该行为（有标题时保留、无标题时落回上传文件名而不是 `v1-` 前缀）。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 
@@ -123,12 +124,16 @@ Linux checkout 里这些路径全部不存在 → 语料为空 → 每题检索�
 （recall@5 ≥ 0.8、引用命中率 ≥ 0.5、忠实度 ≥ 0.7），否则该 job 失败：一个跑不起来就会红、质量回退也会
 红的门，才叫门。同一提交顺带修掉 `scripts/_diag_citation.py`（内部诊断）里同样的绝对路径读取。
 
-2026-09-23 本机复测（SQLite + hash embedding，HEAD `a54c20c`）：
+2026-09-23 本机复测（SQLite + hash embedding）。表中同时给出**词法重排器 IDF 修正前/后**的数字
+（修正见「已完成」中的说明）：
 
-| 库 | recall@5 | 引用命中率（strict） | gate_result |
+| 库 | recall@5 修前 → 修后 | 引用命中率（strict）修前 → 修后 | gate_result 修前 → 修后 |
 |---|---|---|---|
-| rag-agent | 1.0 | 0.4762（0.3333） | `warn`（引用命中率 < 0.500） |
-| docmind-it-assistant | 0.8571 | **0.7143**（0.4762） | **`pass`** |
+| rag-agent | 1.0 → 1.0 | 0.4762（0.3333）→ **0.619（0.5238）** | `warn` → **`pass`** |
+| docmind-it-assistant | 0.8571 → **0.9524** | 0.7143（0.4762）→ **0.8571**（0.6667） | `pass` → `pass` |
+
+两库题数同为 21，通过题数 rag-agent 10 → **13**、docmind 16 → **18**。即此前被记为「弱库、待 §4 切分/去重
+改善」的 rag-agent，主要问题在重排器的 IDF 而不是切分。
 
 CI 只评测本仓库那一半（21 题 / 7 篇文档）；rag-agent 的语料是开发机上的同级目录，不做 vendor，
 在 CI 里按 SKIPPED 记录，因此不会以 0 分污染指标。CI 真 PG 实测（run `35816968938`、`35817447640`）：

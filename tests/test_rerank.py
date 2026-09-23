@@ -22,6 +22,31 @@ def test_lexical_reranker_promotes_best_match():
     assert {c["id"] for c in ranked} == {1, 2, 3}
 
 
+def test_lexical_reranker_prefers_the_distinctive_term_over_boilerplate():
+    """A chunk repeating the words every other chunk contains must not outrank the one holding the
+    query's distinguishing term.
+
+    Reduced form of a live miss: for "打印机卡纸了怎么办？" the section titled 卡纸与耗材 ranked 6th
+    — just outside the top-5, so the answer reported that the material did not cover paper jams —
+    while a section that never mentioned a jam ranked 1st, because it repeated 打印, a bigram
+    present in 5 of the 6 candidates. IDF was the cause: it used the term's frequency *inside the
+    candidate* in place of how many candidates contain it, so a ubiquitous word weighed as much as
+    a rare one and repeating boilerplate was rewarded.
+    """
+    candidates = [
+        {"id": "boilerplate", "content": "printer printer driver guide"},
+        {"id": "jam", "content": "printer jam clear the queue"},
+        {"id": "changelog", "content": "printer driver changelog"},
+        {"id": "matrix", "content": "printer driver support matrix"},
+        {"id": "portal", "content": "printer portal link"},
+        {"id": "hours", "content": "printer service hours"},
+    ]
+    ranked = LexicalReranker().rerank("printer driver jam", candidates)
+    # The IDF bug ranked these changelog, boilerplate, matrix, jam — the only chunk that mentions
+    # a jam came fourth, behind three that merely repeat "printer" and "driver".
+    assert ranked[0]["id"] == "jam", [c["id"] for c in ranked]
+
+
 def test_lexical_reranker_empty_input():
     assert LexicalReranker().rerank("anything", []) == []
 

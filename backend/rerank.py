@@ -38,7 +38,13 @@ def _content_of(candidate: dict) -> str:
 
 
 class LexicalReranker(Reranker):
-    """Offline re-ranker using query/chunk lexical overlap (BM25-ish term weighting)."""
+    """Offline re-ranker using query/chunk lexical overlap (BM25-ish term weighting).
+
+    Term weight is BM25 IDF over the *candidate set*: a query term that appears in many candidates
+    ("the words every chunk repeats") carries almost no weight, while one that appears in a single
+    candidate dominates. Frequency inside a chunk only saturates the score, it never raises the
+    term's weight — see the note in :meth:`rerank` for why that distinction is load-bearing here.
+    """
 
     def __init__(self, *, k1: float = 1.2, b: float = 0.75) -> None:
         self.k1 = k1
@@ -51,28 +57,55 @@ class LexicalReranker(Reranker):
         if not query_terms:
             return list(candidates)
         query_term_set = set(query_terms)
+
+        term_counts: list[dict] = []
+        lengths: list[int] = []
+        document_frequency: dict = {}
+        for candidate in candidates:
+            counts: dict = {}
+            for term in lexical_terms(_content_of(candidate)):
+                counts[term] = counts.get(term, 0) + 1
+            term_counts.append(counts)
+            lengths.append(sum(counts.values()) or 1)
+            for term in set(counts) & query_term_set:
+                document_frequency[term] = document_frequency.get(term, 0) + 1
+
+        # IDF counts how many candidates contain the term. The previous version used the term's
+        # frequency *inside this candidate* instead, which gave a term a smaller weight the more
+        # often the chunk mentioned it — and, worse, treated a word present in nearly every
+        # candidate as if it were as informative as a rare one. A chunk repeating the boilerplate
+        # ("打印" appeared in 5 of 6 candidates) then outranked the chunk holding the discriminating
+        # term ("卡纸", 2 of 6), which is how a section titled 卡纸与耗材 fell out of the top-5
+        # behind sections that never mention a paper jam.
+        #
+        # The length normalisation below still uses the raw term count rather than its ratio to the
+        # average candidate length. That deviates from textbook BM25, and it was measured: switching
+        # it to length/avg_length changed nothing on the golden set (both variants scored
+        # recall@5 0.9524 / citation 0.8571), so only the IDF was corrected here.
+        total = len(candidates)
         scored: list[tuple[float, int, dict]] = []
-        for index, candidate in enumerate(candidates):
-            text = _content_of(candidate)
-            term_counts = {}
-            for term in lexical_terms(text):
-                term_counts[term] = term_counts.get(term, 0) + 1
-            length = sum(term_counts.values()) or 1
+        for index, counts in enumerate(term_counts):
+            length = lengths[index]
             score = 0.0
             for term in query_term_set:
-                frequency = term_counts.get(term, 0)
+                frequency = counts.get(term, 0)
                 if not frequency:
                     continue
-                inverse = math.log(1 + len(candidates) / (frequency + 0.5))
-                score += inverse * frequency / (frequency + self.k1 * (1 - self.b + self.b * length))
-            scored.append((score, index, candidate))
+                seen_in = document_frequency.get(term, 0)
+                inverse = math.log(1 + (total - seen_in + 0.5) / (seen_in + 0.5))
+                score += inverse * frequency / (
+                    frequency + self.k1 * (1 - self.b + self.b * length)
+                )
+            scored.append((score, index, candidates[index]))
         scored.sort(key=lambda item: (-item[0], item[1]))
-        for rank, (_score, _index, candidate) in enumerate(scored, 1):
-            candidate = dict(candidate)
-            candidate["rerank_score"] = round(_score, 6)
-            candidate["rerank_rank"] = rank
-            scored[rank - 1] = (_score, _index, candidate)
-        return [item[2] for item in scored]
+
+        result: list[dict] = []
+        for rank, (score, _index, candidate) in enumerate(scored, 1):
+            annotated = dict(candidate)
+            annotated["rerank_score"] = round(score, 6)
+            annotated["rerank_rank"] = rank
+            result.append(annotated)
+        return result
 
 
 class ApiReranker(Reranker):
