@@ -20,6 +20,24 @@ Run against the production PostgreSQL retrieval path (pgvector + tsvector SQL RR
     IT_TEST_POSTGRES_URL=postgresql+psycopg://docmind:change-me@127.0.0.1:5432/docmind_it \\
         python scripts/run_golden_eval.py
 The script creates and drops its own disposable database, so the server role needs CREATEDB.
+
+Where the corpus lives
+----------------------
+Document paths in the golden set are relative to each repo's logical root, and the root is resolved
+by ``scripts/golden_paths.py`` (``--repo-root KEY=PATH`` → ``IT_GOLDEN_ROOT_KEY`` → a sibling
+directory named after the key). The set spans two repositories: on the development machine both
+resolve and both are measured, while in CI only this repository is checked out, so the other one is
+skipped and reported as skipped. Point a root at a checkout explicitly with, for example,
+``--repo-root rag-agent=/path/to/rag-agent``.
+
+Exit codes
+----------
+0  everything that ran, ran cleanly. Under ``--gate-mode warn`` (the default) metric thresholds are
+   reported, not enforced — that is the documented design: expose a weak corpus without blocking.
+1  harness failure — a document is missing, a repo indexed zero documents, an import failed, or no
+   repo could be run at all. This is the case that used to hide: a run that measures nothing must
+   not report success.
+1  gate failure, only with ``--gate-mode block``, when a repo's ``gate_result`` is ``block``.
 """
 from __future__ import annotations
 
@@ -33,8 +51,12 @@ from fastapi.testclient import TestClient
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # ensure repo root (admin_app, backend) is importable
-from admin_app import create_admin_app
-from backend import AppSettings
+sys.path.insert(0, str(HERE))         # sibling helpers (golden_paths) when run as a script
+from admin_app import create_admin_app                                   # noqa: E402
+from backend import AppSettings                                          # noqa: E402
+from golden_paths import (                                               # noqa: E402
+    document_path, env_var_for, parse_repo_root_args, resolve_repo_root, root_key,
+)
 
 GOLDEN = HERE.parent / "golden" / "retrieval_golden_set.json"
 
@@ -105,7 +127,7 @@ def detect_embedding_mode(arg_mode: str | None) -> tuple[str, str, str | None]:
 
 
 def build_settings(project: Path, embedding_mode: str, embedding_provider: str,
-                   database_url: str | None = None) -> AppSettings:
+                   database_url: str | None = None, gate_mode: str = "warn") -> AppSettings:
     knowledge = project / "knowledge.md"
     knowledge.write_text("# IT\n", encoding="utf-8")
     web = project / "web" / "index.html"
@@ -133,7 +155,9 @@ def build_settings(project: Path, embedding_mode: str, embedding_provider: str,
         auth_subject_salt="golden-subject-salt",
         log_level="CRITICAL",
         governance_mode="direct",
-        evaluation_gate_mode="warn",
+        # warn by default (the documented design: expose a weak corpus without blocking);
+        # --gate-mode block makes the same thresholds hard so CI can be made to fail on them.
+        evaluation_gate_mode=gate_mode,
         evaluation_min_recall=0.8,
         evaluation_min_citation_accuracy=0.5,
         evaluation_max_regression=0.05,
@@ -153,20 +177,36 @@ def build_settings(project: Path, embedding_mode: str, embedding_provider: str,
 
 
 def run_repo(repo: dict, embedding_mode: str, embedding_provider: str,
-             database_url: str | None = None) -> dict:
+             database_url: str | None = None, repo_root: Path | None = None,
+             gate_mode: str = "warn") -> dict:
+    """Index one repo's corpus and run its golden cases.
+
+    ``repo_root`` resolves the set's relative document paths. A missing document is treated as a
+    harness failure, not a warning: the metrics are computed over the corpus, so measuring a partial
+    one silently understates retrieval quality while still looking like a real score.
+    """
+    missing = [doc for doc in repo["documents"] if not document_path(repo_root, doc).is_file()]
+    if missing:
+        for doc in missing:
+            print(f"  [MISSING DOC] {doc['source_key']}: {document_path(repo_root, doc)}")
+        return {
+            "repo": repo["name"],
+            "root": str(repo_root) if repo_root else None,
+            "documents_indexed": 0,
+            "documents_missing": [doc["source_key"] for doc in missing],
+            "error": f"{len(missing)}/{len(repo['documents'])} documents not found",
+        }
+
     with tempfile.TemporaryDirectory() as root:
         project = Path(root)
         settings = build_settings(project, embedding_mode, embedding_provider,
-                                  database_url=database_url)
+                                  database_url=database_url, gate_mode=gate_mode)
         application = create_admin_app(settings)
         with TestClient(application) as client:
             # 1) index documents
             indexed = []
             for doc in repo["documents"]:
-                path = Path(doc["path"])
-                if not path.exists():
-                    print(f"  [WARN] missing doc: {path}")
-                    continue
+                path = document_path(repo_root, doc)
                 resp = client.post(
                     "/api/admin/documents/import",
                     headers=HEADERS,
@@ -177,7 +217,9 @@ def run_repo(repo: dict, embedding_mode: str, embedding_provider: str,
                 )
                 if resp.status_code != 200:
                     print(f"  [IMPORT FAIL] {doc['source_key']} {resp.status_code} {resp.text[:200]}")
-                    return {"repo": repo["name"], "error": f"import {doc['source_key']}"}
+                    return {"repo": repo["name"], "root": str(repo_root),
+                            "documents_indexed": len(indexed),
+                            "error": f"import {doc['source_key']}"}
                 indexed.append(doc["source_key"])
             print(f"  indexed {len(indexed)} docs: {indexed}")
 
@@ -222,6 +264,9 @@ def run_repo(repo: dict, embedding_mode: str, embedding_provider: str,
 
     return {
         "repo": repo["name"],
+        "root": str(repo_root) if repo_root else None,
+        "documents_indexed": len(indexed),
+        "gate_mode": gate_mode,
         "run_id": run_id,
         "status": m["status"],
         "gate_result": m["gate_result"],
@@ -242,6 +287,7 @@ def run_repo(repo: dict, embedding_mode: str, embedding_provider: str,
 def main() -> int:
     arg_mode = None
     out_path = None
+    gate_mode = "warn"
     for a in sys.argv[1:]:
         if a.startswith("--embedding"):
             arg_mode = a.split("=", 1)[1] if "=" in a else None
@@ -251,6 +297,18 @@ def main() -> int:
             out_path = a.split("=", 1)[1] if "=" in a else None
             if out_path is None and len(sys.argv) > sys.argv.index(a) + 1:
                 out_path = sys.argv[sys.argv.index(a) + 1]
+        elif a.startswith("--gate-mode"):
+            gate_mode = a.split("=", 1)[1] if "=" in a else None
+            if gate_mode is None and len(sys.argv) > sys.argv.index(a) + 1:
+                gate_mode = sys.argv[sys.argv.index(a) + 1]
+    if gate_mode not in ("off", "warn", "block"):
+        print(f"[args] --gate-mode must be off|warn|block, got {gate_mode!r}")
+        return 1
+    try:
+        repo_roots = parse_repo_root_args(sys.argv[1:])
+    except ValueError as exc:
+        print(f"[args] {exc}")
+        return 1
     embedding_mode, embedding_provider, why = detect_embedding_mode(arg_mode)
     print(f"[embedding] mode={embedding_mode} provider={embedding_provider} ({why})")
     if embedding_mode == "provider" and not os.environ.get("DASHSCOPE_API_KEY", "").strip():
@@ -265,16 +323,42 @@ def main() -> int:
 
     data = json.loads(GOLDEN.read_text(encoding="utf-8"))
     print(f"Loaded golden set: {len(data['repos'])} repos")
-    results = []
+    print("[roots] --repo-root <key>=<path> > IT_GOLDEN_ROOT_<KEY> > sibling of this repository")
+    for repo in data["repos"]:
+        found, how = resolve_repo_root(repo, overrides=repo_roots)
+        detail = f"root={found}  ({how})" if found else f"root NOT FOUND  (tried {how})"
+        print(f"[roots]   {repo['name']:24} {detail}")
+
+    results: list = []
+    harness_failures: list = []
+    gate_failures: list = []
+    ran = 0
     try:
         for repo in data["repos"]:
+            root, how = resolve_repo_root(repo, overrides=repo_roots)
+            if root is None:
+                # Skipped, never scored as zero. A corpus that is not present must not be reported
+                # in a way that looks like a corpus that scored badly.
+                print(f"\n===== REPO: {repo['name']} — SKIPPED (repo root not found) =====")
+                print(f"  tried: {how}")
+                print(f"  point it at a checkout with --repo-root {root_key(repo)}=<path> "
+                      f"or {env_var_for(root_key(repo))}=<path>")
+                results.append({
+                    "repo": repo["name"], "root": None, "skipped": True,
+                    "reason": f"repo root not found; tried {how}",
+                })
+                continue
+
             print(f"\n===== REPO: {repo['name']} ({len(repo['documents'])} docs, "
                   f"{len(repo['cases'])} cases) =====")
-            report = run_repo(repo, embedding_mode, embedding_provider, database_url=pg_db_url)
+            report = run_repo(repo, embedding_mode, embedding_provider, database_url=pg_db_url,
+                              repo_root=root, gate_mode=gate_mode)
             results.append(report)
             if "error" in report:
                 print(f"  ERROR: {report['error']}")
+                harness_failures.append(f"{repo['name']}: {report['error']}")
                 continue
+            ran += 1
             print(f"  status           : {report['status']}")
             print(f"  gate_result      : {report['gate_result']}  ({report['gate_reason']})")
             print(f"  total/passed     : {report['total_cases']}/{report['passed_cases']} "
@@ -289,6 +373,10 @@ def main() -> int:
                 print(f"    {r['case_key']:22} ret={str(r['retrieved']):5} "
                       f"rank={str(r['rank']):5} cite={str(r['citation_ok']):5} "
                       f"ref={str(r['refusal_ok']):5} faith={r['faithfulness']}")
+            if report["gate_result"] in ("warn", "block"):
+                gate_failures.append(
+                    f"{repo['name']}: {report['gate_result']} ({report['gate_reason']})"
+                )
     finally:
         if pg_db_name:
             print(f"[db] dropping disposable PostgreSQL database {pg_db_name}")
@@ -297,6 +385,26 @@ def main() -> int:
     out = Path(out_path) if out_path else HERE.parent / "tmp_golden_report.json"
     out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nReport written to {out}")
+
+    skipped = sum(1 for r in results if r.get("skipped"))
+    print(f"[harness] repos run={ran} skipped={skipped} "
+          f"harness_failures={len(harness_failures)} below_threshold={len(gate_failures)} "
+          f"gate_mode={gate_mode}")
+
+    # A run that measured nothing must not report success — that is exactly how the CI job stayed
+    # green while every metric read 0.000.
+    if harness_failures:
+        print("[harness] FAILED: " + "; ".join(harness_failures))
+        return 1
+    if ran == 0:
+        print("[harness] FAILED: no repository could be run, so nothing was measured")
+        return 1
+    if gate_mode == "block" and gate_failures:
+        print("[gate] FAILED (gate_mode=block): " + "; ".join(gate_failures))
+        return 1
+    if gate_failures:
+        print(f"[gate] below threshold, not enforced (gate_mode={gate_mode}): "
+              + "; ".join(gate_failures))
     return 0
 
 

@@ -23,6 +23,7 @@
 - 部署编排包含索引 Worker：`scripts/dev.ps1` 启停三个服务（查询/管理/Worker），`compose.yaml` 增加 `worker` 服务并在管理服务与管理端共享 `docmind_sources` 卷、独立 `docmind_worker` 卷保存 checkpoint。
 - PowerShell 本地启停脚本与 Docker Compose 本地 PostgreSQL 环境。
 - 并发连接池的有界性回归：`tests/test_connection_pool.py` 在 CI 的 PostgreSQL 上以 64 并发 × 128 次写请求（`POST /api/query`）断言「全部 200、峰值连接占用 > `pool_size`、峰值 ≤ `pool_size + max_overflow`、`queries` 行数等于请求数」，覆盖 `async def`→`def` 之后连接池的真实行为；实测数字以 CI artifact 留存（决策 C 的证据，非门禁）。
+- 黄金集检索评测 harness 可移植：语料改用仓库相对路径 + 逻辑根（新增 `scripts/golden_paths.py`，解析顺序 `--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录），根缺失时该 repo **整组跳过并记入报告**（绝不按 0 分参与统计）；脚本在「测不到任何东西」时退出码为 1，堵住了 CI 曾出现的「全 0 分却发绿」。
 - 自动测试、依赖漏洞扫描和 Dependabot 更新。
 
 ## 安全边界
@@ -60,6 +61,8 @@
 .venv\Scripts\python -m worker --once
 node --check web/admin.js
 .venv\Scripts\python -m pip check
+# 黄金集检索评测：本机两套语料都会跑；CI 只跑本仓库那一半
+.venv\Scripts\python -B scripts/run_golden_eval.py --embedding hash
 ```
 
 ### 并发能力：池的**有界性**已在 CI 上验证，容量仍未验证
@@ -99,6 +102,33 @@ SQL 延迟分位、超 `IT_SLOW_DB_MS` 阈值的语句数）写入 CI artifact `
 `alembic` 与 `worker` 使用 `.env` / 进程环境里的 `IT_DATABASE_URL`；本机没有可用的 PostgreSQL 时，
 先设置 `IT_DATABASE_URL=sqlite:///data/queries.db`，或直接用 `.\scripts\dev.ps1 start`
 （它会覆盖为项目内 SQLite 并自动执行迁移，同时启动查询、管理与 Worker 三个进程）。
+
+### 黄金集语料的可移植性，与「发绿但没测量到任何东西」的修复
+
+`golden/retrieval_golden_set.json` 原先用**绝对路径**（`D:/WorkBuddy/...`）引用两套语料。在 CI 的
+Linux checkout 里这些路径全部不存在 → 语料为空 → 每题检索为空 → `recall@5` 与引用命中率恒 `0.000`
+→ 两库都只是 `warn`，而 `warn` 不阻断 → **`golden-eval` 这个 job 从未真正设门**，却一直显示绿。
+这是与下文 `check_run_log.py` 同类的另一个实例：**发绿不等于真的跑了**——而且这次连「跑」都没有发生。
+
+现已改为**仓库相对路径 + 逻辑根**，由新增的 `scripts/golden_paths.py` 解析，优先级为
+`--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录（本机即 `D:/WorkBuddy/<key>`）。
+前两者是**显式且权威的**：指到非目录即判定「根不存在」，**不回落**到同级目录——静默换一份语料去测，
+比直接跳过更危险。根不存在时该 repo 整组跳过，并在报告里留下 `skipped` 与「找过哪些位置」。
+
+同时给脚本加了**测量护栏**（与门禁模式无关，退出码 1）：任一文档缺失、导入失败、某 repo 一卷文档都没
+索引成功、或**没有任何 repo 可运行**。门禁模式仍按既定设计保持 `warn`（只暴露弱库、不阻断发布；
+`--gate-mode block` 可切换为硬门禁）。同一提交顺带修掉 `scripts/_diag_citation.py`（内部诊断）里同样的
+绝对路径读取。
+
+2026-09-23 本机复测（SQLite + hash embedding，HEAD `a54c20c`）：
+
+| 库 | recall@5 | 引用命中率（strict） | gate_result |
+|---|---|---|---|
+| rag-agent | 1.0 | 0.4762（0.3333） | `warn`（引用命中率 < 0.500） |
+| docmind-it-assistant | 0.8571 | **0.7143**（0.4762） | **`pass`** |
+
+CI 只评测本仓库那一半（21 题 / 7 篇文档）；rag-agent 的语料是开发机上的同级目录，不做 vendor，
+在 CI 里按 SKIPPED 记录，因此不会以 0 分污染指标。
 
 `scripts/_*.py`（如 `_diag_citation.py`、`_diff_golden.py`、`_run_tests.py`）是内部诊断脚本，
 **不是生产入口**，不参与部署；`scripts/check_suite_completeness.py` 与 `scripts/check_run_log.py` 是一对护栏，分工互补：

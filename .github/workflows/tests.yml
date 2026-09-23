@@ -100,8 +100,10 @@ jobs:
 
   golden-eval:
     runs-on: ubuntu-latest
-    # The golden set imports ~42 documents through the real HTTP stack and embeds them; budget
-    # generously. Runs in parallel with the unit suite below.
+    # The golden set holds 42 cases across two repos; only the half that lives in this repository
+    # can be measured here (21 cases, 7 documents), the other repo is a local sibling and is
+    # reported as SKIPPED. Budget generously anyway: the documents are imported through the real
+    # HTTP stack and embedded. Runs in parallel with the unit suite below.
     timeout-minutes: 20
 
     # Reuses the same pgvector service: the script provisions and drops its own disposable database
@@ -133,7 +135,19 @@ jobs:
       - name: Run golden evaluation against PostgreSQL
         env:
           IT_TEST_POSTGRES_URL: postgresql+psycopg://docmind:change-me@127.0.0.1:5432/docmind_it
-        run: python -B scripts/run_golden_eval.py --embedding hash --out golden_report.json
+          # The golden set spans two repositories and stores repo-relative document paths, resolved
+          # by scripts/golden_paths.py. Only this repository is checked out here, so its root is
+          # named explicitly; the rag-agent half lives beside it on the developer machine and is
+          # reported as SKIPPED rather than scored as 0.
+          IT_GOLDEN_ROOT_DOCMIND_IT_ASSISTANT: ${{ github.workspace }}
+        # --gate-mode warn is the documented design: thresholds are exposed, not enforced. Switch it
+        # to `block` to make a below-threshold corpus fail this job.
+        #
+        # Independently of the gate mode, the script now exits non-zero when it could not measure
+        # anything (a missing document, an import failure, or no repository runnable at all). That
+        # is the failure this job used to hide: the corpus resolved to nothing, every metric printed
+        # 0.000, and the job still finished green.
+        run: python -B scripts/run_golden_eval.py --embedding hash --gate-mode warn --out golden_report.json
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4

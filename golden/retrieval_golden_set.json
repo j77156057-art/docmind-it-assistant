@@ -1,15 +1,16 @@
 {
-  "description": "DocMind 检索式黄金题库（重建版）。两套语料各约 21 题，共 42 题，锚定真实章节。每题 expected_document_key 对应导入时的 source_key；expected_heading 为真实章节标题子串（门禁用 `in` 匹配）。",
+  "description": "DocMind 检索式黄金题库（重建版）。两套语料各约 21 题，共 42 题，锚定真实章节。每题 expected_document_key 对应导入时的 source_key；expected_heading 为真实章节标题子串（门禁用 `in` 匹配）。文档路径相对各自仓库根目录，不再写死绝对路径：根的解析顺序为 --repo-root KEY=PATH → 环境变量 IT_GOLDEN_ROOT_KEY（KEY 为大写、非字母数字换下划线）→ 与本仓库同级的同名目录（本机即 D:/WorkBuddy/<key>）。根不存在时该 repo 整组跳过并记进报告，而不是静默算出 0 分。",
   "repos": [
     {
       "name": "rag-agent",
+      "root": "rag-agent",
       "documents": [
-        {"source_key": "ra-readme", "title": "DocMind 工程 Agent 运行时 README", "path": "D:/WorkBuddy/rag-agent/README.md"},
-        {"source_key": "ra-demo", "title": "DocMind 演示说明", "path": "D:/WorkBuddy/rag-agent/DEMO.md"},
-        {"source_key": "ra-capability", "title": "DocMind 能力边界对照表", "path": "D:/WorkBuddy/rag-agent/docs/capability-boundary.md"},
-        {"source_key": "ra-integrations", "title": "DocMind 集成文档 MCP 与 Web 试玩", "path": "D:/WorkBuddy/rag-agent/docs/integrations.md"},
-        {"source_key": "ra-product", "title": "DocMind 智能文档助手产品说明", "path": "D:/WorkBuddy/rag-agent/sample_docs/docmind_product.md"},
-        {"source_key": "ra-roadmap", "title": "Agent 双项目拆分记录", "path": "D:/WorkBuddy/rag-agent/docs/agent-applications-roadmap.md"}
+        {"source_key": "ra-readme", "title": "DocMind 工程 Agent 运行时 README", "path": "README.md"},
+        {"source_key": "ra-demo", "title": "DocMind 演示说明", "path": "DEMO.md"},
+        {"source_key": "ra-capability", "title": "DocMind 能力边界对照表", "path": "docs/capability-boundary.md"},
+        {"source_key": "ra-integrations", "title": "DocMind 集成文档 MCP 与 Web 试玩", "path": "docs/integrations.md"},
+        {"source_key": "ra-product", "title": "DocMind 智能文档助手产品说明", "path": "sample_docs/docmind_product.md"},
+        {"source_key": "ra-roadmap", "title": "Agent 双项目拆分记录", "path": "docs/agent-applications-roadmap.md"}
       ],
       "cases": [
         {"case_key": "ra-01", "question": "DocMind 这个项目主体到底是什么？", "expected_document_key": "ra-readme", "expected_heading": "Agent 运行时", "tags": "rag-agent/定位"},
@@ -37,14 +38,15 @@
     },
     {
       "name": "docmind-it-assistant",
+      "root": "docmind-it-assistant",
       "documents": [
-        {"source_key": "dm-readme", "title": "DocMind IT Assistant README", "path": "D:/WorkBuddy/docmind-it-assistant/README.md"},
-        {"source_key": "dm-status", "title": "Project Status", "path": "D:/WorkBuddy/docmind-it-assistant/PROJECT_STATUS.md"},
-        {"source_key": "dm-knowledge", "title": "演示企业 IT 知识库", "path": "D:/WorkBuddy/docmind-it-assistant/knowledge.md"},
-        {"source_key": "dm-ingestion", "title": "文档导入与混合检索运维说明", "path": "D:/WorkBuddy/docmind-it-assistant/docs/document-ingestion.md"},
-        {"source_key": "dm-p2acl", "title": "P2 ACL 切换架构设计", "path": "D:/WorkBuddy/docmind-it-assistant/docs/architecture-p2-acl-switch.md"},
-        {"source_key": "dm-isolation", "title": "与开发 Agent 的隔离边界", "path": "D:/WorkBuddy/docmind-it-assistant/docs/isolation-boundary.md"},
-        {"source_key": "dm-govmodel", "title": "知识供给治理数据模型", "path": "D:/WorkBuddy/docmind-it-assistant/docs/knowledge-governance-data-model.md"}
+        {"source_key": "dm-readme", "title": "DocMind IT Assistant README", "path": "README.md"},
+        {"source_key": "dm-status", "title": "Project Status", "path": "PROJECT_STATUS.md"},
+        {"source_key": "dm-knowledge", "title": "演示企业 IT 知识库", "path": "knowledge.md"},
+        {"source_key": "dm-ingestion", "title": "文档导入与混合检索运维说明", "path": "docs/document-ingestion.md"},
+        {"source_key": "dm-p2acl", "title": "P2 ACL 切换架构设计", "path": "docs/architecture-p2-acl-switch.md"},
+        {"source_key": "dm-isolation", "title": "与开发 Agent 的隔离边界", "path": "docs/isolation-boundary.md"},
+        {"source_key": "dm-govmodel", "title": "知识供给治理数据模型", "path": "docs/knowledge-governance-data-model.md"}
       ],
       "cases": [
         {"case_key": "dm-01", "question": "DocMind IT Assistant 的核心能力有哪些？", "expected_document_key": "dm-readme", "expected_heading": "核心能力", "tags": "dm/能力"},

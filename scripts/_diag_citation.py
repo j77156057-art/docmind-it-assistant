@@ -19,10 +19,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
 
 from backend import HybridRetriever, QueryDatabase  # noqa: E402
 from backend.embeddings import EmbeddingClient  # noqa: E402
 from backend.rerank import LexicalReranker  # noqa: E402
+from golden_paths import document_path, resolve_repo_root  # noqa: E402
 from ingestion import DocumentIngestionService  # noqa: E402
 
 GOLDEN = HERE.parent / "golden" / "retrieval_golden_set.json"
@@ -36,7 +38,11 @@ def main() -> int:
     stats = {"wrong_doc": 0, "heading_miss": 0, "heading_empty": 0, "cited": 0, "total": 0}
 
     for repo in data["repos"]:
-        lines.append(f"===== {repo['name']} =====")
+        repo_root, how = resolve_repo_root(repo)
+        lines.append(f"===== {repo['name']} (root={repo_root}) =====")
+        if repo_root is None:
+            lines.append(f"  [SKIP] repo root not found; tried {how}")
+            continue
         with tempfile.TemporaryDirectory() as root:
             project = Path(root)
             db = QueryDatabase(str(project / "k.db"))
@@ -47,7 +53,7 @@ def main() -> int:
                                            chunk_max_chars=1200, chunk_overlap_chars=150,
                                            chunk_child_max_chars=400)
             for doc in repo["documents"]:
-                p = Path(doc["path"])
+                p = document_path(repo_root, doc)
                 if not p.exists():
                     lines.append(f"  [MISSING DOC] {p}")
                     continue
@@ -97,7 +103,7 @@ def main() -> int:
                              f"exp_head=[{exp_head}] got_head=[{(got_head or '')[:60]}]")
                 if verdict == "HEADING_MISS":
                     tag = f"  <-- also at rank {later}" if later else ""
-                    lines.append(f"      top5: " + " | ".join(
+                    lines.append("      top5: " + " | ".join(
                         f"{(h.get('source_key') or '')}:{(h.get('heading') or '')[:28]}"
                         for h in hits) + tag)
             db.dispose()
