@@ -1,6 +1,6 @@
 # 实现方案预研：异步路由 Handler `def` 化（架构债 #1）
 
-> 状态：已实施（待评审 / 待推送 main）
+> 状态：已实施并推送（main@`d2339ef`，CI run `35781968760` success）；§9.1 为 2026-09-23 的决策 C 实测补充
 > 作者：交付总监（team lead）
 > 范围：DocMind IT Assistant — `app.py` 与 `admin_app.py` 的路由 handler 并发纪律
 > 决策依据：架构评审（main@ca9db6f）债 #1「异步/线程池纪律不一致」
@@ -23,7 +23,9 @@ DocMind 的现状：
 
 ## 2. 修复原理（为什么 `def` 化是对的）
 
-FastAPI 对 `def`（同步）路由 handler 会**自动提交到默认 `ThreadPoolExecutor`** 执行，事件循环得以继续处理其他请求。这正是对"同步 DB 驱动"的官方推荐做法。
+FastAPI 对 `def`（同步）路由 handler 会经 `starlette.concurrency.run_in_threadpool` → `anyio.to_thread.run_sync` **自动 offload 到工作线程**执行，事件循环得以继续处理其他请求。这正是对"同步 DB 驱动"的官方推荐做法。
+
+> **机制措辞更正（2026-09-23 实测）**：这条路径**不是** `concurrent.futures.ThreadPoolExecutor`。本项目 anyio **4.15.1** 的 `to_thread` 使用自带的 `WorkerThread` 池，并发上限由默认 `CapacityLimiter` 决定，令牌数恒为 **40**；`ThreadPoolExecutor` 的默认 `min(32, cpu+4)`（本机 32）与本路径无关。实测数据见 §9.1 —— **"上限 40、且不是 32"是结论性的，不要再按 32 推算容量。**
 
 安全性已逐条核实，无假设：
 
@@ -103,7 +105,7 @@ FastAPI 对 `def`（同步）路由 handler 会**自动提交到默认 `ThreadPo
 | 风险 | 评估 | 缓解 |
 |---|---|---|
 | 误转含 `await` 的 handler | **极低**：`def` 内出现 `await` 是语法错误，根本无法启动/导入，CI + 本地 `pytest` 立即捕获 | 步骤 2 的"无 `await`"判定 + 全量 `pytest` 自校验 |
-| 线程池饱和 | 中：默认 `ThreadPoolExecutor` 40 线程；`database` 连接池默认 `pool_size=5`/`max_overflow=10` → 若 40 线程同时查 DB，连接池会排队（`pool_timeout`） | 相比"事件循环被完全卡死"，这是有界、可观测的（已有 `slow_db_ms` 日志）。高 QPS 读面可显式调大 `database_pool_size` 或 Starlette 线程池 `max_workers`（follow-up，不阻塞本次） |
+| 线程池饱和 | 中：并发上限是 anyio 默认 `CapacityLimiter` 的 **40** 个令牌（**不是** `ThreadPoolExecutor` 的 32，也没有 `max_workers` 这样的配置项）；`database` 连接池默认 `pool_size=5`/`max_overflow=10` → 40 个线程同时查 DB 时**连接池先饱和**，多出的至多 25 个线程排队到 `pool_timeout=30s` | 相比"事件循环被完全卡死"，这是有界、可观测的（已有 `slow_db_ms` 日志）。**约束链：线程上限(40) > 池容量(15) ⇒ 池才是真瓶颈**，要调就先调池。高 QPS 读面可显式调大 `database_pool_size` / `database_max_overflow`（follow-up，不阻塞本次；实测与判据见 §9.1） |
 | OpenAPI / 行为变化 | 无：`def` 与 `async def` 路由对 FastAPI 等价 | 无需改动契约文档 |
 | 中间件 / 异常处理器误转 | 已显式排除（§3.4） | 步骤 1 排除装饰器 |
 
@@ -125,6 +127,7 @@ FastAPI 对 `def`（同步）路由 handler 会**自动提交到默认 `ThreadPo
 - **A. 风格统一度**：仅修"直接调 `database.*` 且无 `await`"的那批（最小、最安全），还是连"已用 `run_in_threadpool` 的 handler"也改成 `def` 并去 `await` 包裹（更统一，但 diff 更大）？
 - **B. `import_document` 走法**：(a) 保 `async` + 补齐 `run_in_threadpool` 包裹（推荐，风险最低），还是 (b) 改 `def` + 同步文件读？
 - **C. 连接池/线程池**：本次是否一并调大 `database_pool_size` / Starlette 线程池以防饱和，还是先改代码、观察 `slow_db_ms` 慢查询日志再定？
+  - **2026-09-23 实测补充**：维持"先改代码、观察再定"。且本地已证伪"只调线程侧"——把 anyio 令牌从 40 调到 64/96，真实并行度确实抬到 64/96，但吞吐 109.4→105.8→99.5 req/s **不升反降**。真正需要调的是**连接池**，判据与真 PG 观察口径见 §9.1。
 
 ---
 
@@ -158,3 +161,70 @@ FastAPI 对 `def`（同步）路由 handler 会**自动提交到默认 `ThreadPo
 - 实施坑（已规避）：同文件并行 Edit 存在写竞争，部分编辑被基于陈旧文件态的后续写覆盖；改用「单次读-单次写」脚本原子化修复，并以 AST 断言兜底。
 
 **提交**：单 commit `refactor: offload blocking DB calls from event loop by def-ifying route handlers`，经 Git Data API 推送（SHA 保留）。
+
+---
+
+## 9.1 决策 C 实测补充（2026-09-23）
+
+> 目的：把决策 C「要不要调池尺寸」从"凭推断"变成"有实测判据"。**不改变本次已推送的代码**（`d2339ef` 已闭环，CI run `35781968760` success），只补观测口径与一处事实更正。
+
+### 一、事实更正：线程上限是 **40**，不是 32
+
+实测环境：python 3.13.3 / anyio **4.15.1** / starlette 1.6.0 / fastapi 0.141.1 / sqlalchemy 2.0.54，本机 `cpu_count=32`。
+
+三条独立证据一致：
+
+| # | 方法 | 结果 |
+|---|---|---|
+| 1 | 事件循环内内省 `anyio.to_thread.current_default_thread_limiter().total_tokens` | **40**（类型 `CapacityLimiter`）|
+| 2 | 裸压 `starlette.concurrency.run_in_threadpool`：64 并发 × 300ms 阻塞 | 峰值并发 **40**，wall 0.65s（= `ceil(64/40)=2` 波）|
+| 3 | 真 app 的 `/api/history`（`app.py:392`，DB 型 `def` 路由）压测 | 见下表，峰值并发封顶 **40** |
+
+| offered concurrency | 8 | 16 | 40 | 64 | 128 |
+|---|---|---|---|---|---|
+| 实测峰值并发 | 8 | 16 | **40** | **40** | **40** |
+| p50 (ms) | 60.3 | 161.7 | 414.2 | 591.4 | 883.0 |
+| p95 (ms) | 87.9 | 197.4 | 492.6 | 926.8 | 1191.2 |
+| 失败数 | 0 | 0 | 0 | 0 | 0 |
+
+**为什么不是 32**：`min(32, cpu_count+4)` 是 `concurrent.futures.ThreadPoolExecutor` 的默认值；anyio 4.x 的 `to_thread` 使用自带的 `WorkerThread` 池，**不经过 `ThreadPoolExecutor`**，其并发闸门是默认 `CapacityLimiter(40)`。本文档 §2 与 §5 早先的"ThreadPoolExecutor 40 线程"说法**数字巧合、对象错误**，已在上文更正。**不要再按 32 推算容量。**
+
+### 二、连接池那一半在本地**结构上测不到**
+
+`backend/database.py:74-79` 的 sqlite 分支只设 `connect_args={"check_same_thread": False}` 与 `poolclass=NullPool`，**`pool_size` / `max_overflow` / `pool_timeout` 根本不传给 `create_engine`**——它们只在 `postgresql` 分支（`backend/database.py:80-86`）生效。运行时核对 `db.engine.pool.__class__.__name__ == "NullPool"` 已确认。
+
+因此 `database_pool_size` / `database_max_overflow` 在 SQLite 下是**死配置**，本机不具备复现池饱和的条件。**池侧结论只能由真 PG 环境给出，任何本地数字都不许当作池的结论。**
+
+### 三、单变量控制实验：只调线程侧**无效**
+
+固定 `offered concurrency=96` / `requests=192`（均不变），**唯一变量** = anyio 令牌数（以显式 `CapacityLimiter(T)` 注入 `run_in_threadpool`）：
+
+| T (tokens) | 峰值并发 | wall | 吞吐 rps | p50 (ms) | 失败 |
+|---|---|---|---|---|---|
+| 40（默认）| 40 | 1.75s | 109.4 | 733.0 | 0 |
+| 64 | 64 | 1.81s | 105.8 | 686.9 | 0 |
+| 96 | 96 | 1.93s | 99.5 | 848.6 | 0 |
+
+- 令牌数**确实是生效的旋钮**（峰值并发随之抬到 64 / 96）；
+- 但在 SQLite 下**吞吐不升反微降**：增加线程只是增加争用（`NullPool` 每次 checkout 重开连接 + 文件锁序列化），事件循环本身早已不是瓶颈。
+
+**结论：单独调线程池不是有效的优化手段，必须与连接池一起评估。**
+
+### 四、真 PG 环境的观察口径（runbook）
+
+观测钩子已被证明可用：把 `IT_SLOW_DB_MS` 降到 5ms 时真能打出 `event=slow_db_query`（10–16ms 级）；默认阈值下 192 请求只有 2–11 条 `slow_request`——**钩子没问题，是阈值与原 SQLite 场景的问题**。
+
+- **开关**：`IT_SLOW_DB_MS`（默认 200）、`IT_SLOW_REQUEST_MS`（默认 1000）。慢事件是结构化 JSON，按 `event=slow_db_query` / `event=slow_request` 过滤（实现见 `backend/database.py:105-124`、`app.py:189-194`）。
+- **灌流量**：`scripts/bench_concurrency.py`（离线并发探针，人工触发，**不是门禁断言**）。
+- **看三件事**：
+  1. `slow_db_query.duration_ms` 是否随并发**阶梯上升**——若上升，是**连接池排队**，不是单条 SQL 变慢；
+  2. `slow_request` 是否**集中在 DB 型路由**（`/api/history`、`/api/admin/documents`、`/api/usage/ledger` 等），而 `/api/query` 之类已 offload 的路由相对干净；
+  3. 有无 `TimeoutError`（`pool_timeout=30s`）或 5xx——**出现即池容量硬不足，是"必须调池"的判决性证据**。
+- **判据（约束链）**：anyio 令牌 **40** → PG 池 `pool_size(5) + max_overflow(10) = 15` → 40 个 `def` handler 同时进 DB 时最多 15 个拿到连接，其余 25 个排队至 30s。**线程上限 > 池容量 ⇒ 池才是真瓶颈**。
+- **若要调**：先调 `IT_DB_POOL_SIZE` / `IT_DB_MAX_OVERFLOW`，并满足 `pool_size + max_overflow ≤ PG max_connections − 预留`（**再乘进程/worker 数**，PG `max_connections` 是实例级共享的）。**不建议**顺手调大 anyio 令牌：在池不变时它只把排队从池内挪到线程侧，收益为零（§三已实测）。
+- **不建议的触发条件**：仅在无 PG 的本地 SQLite 上看到 `slow_db_query` 就调池——那基本是 SQLite 连接/锁开销，与 PG 池无关。
+
+### 五、证据留存
+
+探针脚本与原始输出在 **`D:/Temp/dm_probe/`**（`probe_c.py` 压测矩阵、`probe_c2.py` 单变量控制实验、`probe_c.out` / `probe_c2.out`），**不在仓库内**，工作树保持干净。本节所有数字均来自这两个脚本的实跑。
+
