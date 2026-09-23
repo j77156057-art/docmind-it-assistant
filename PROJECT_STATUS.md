@@ -129,10 +129,17 @@ Linux checkout 里这些路径全部不存在 → 语料为空 → 每题检索�
 | docmind-it-assistant | 0.8571 | **0.7143**（0.4762） | **`pass`** |
 
 CI 只评测本仓库那一半（21 题 / 7 篇文档）；rag-agent 的语料是开发机上的同级目录，不做 vendor，
-在 CI 里按 SKIPPED 记录，因此不会以 0 分污染指标。CI 真 PG 实测（run `35816968938`）与上表**主指标完全一致**：
-docmind `recall@5 0.8571` / 引用命中率 `0.7143`（strict 0.5238）/ 忠实度 1.0 → `pass`，`below_threshold=0`
-→ 两条检索路径（SQLite portable 全表扫描 与 PG pgvector + tsvector RRF）在这份语料上给出同一结论，
-仅 strict 口径有微小差（本地 0.4762 / CI 0.5238）。CI 自本次起以 `--gate-mode block` 运行。
+在 CI 里按 SKIPPED 记录，因此不会以 0 分污染指标。CI 真 PG 实测（run `35816968938`、`35817447640`）：
+docmind `recall@5 0.8571`（两次一致，与本地 SQLite 相同）、引用命中率 `0.7143` / `0.7619`
+（strict `0.5238` / `0.5714`）、忠实度 1.0 → 两次均 `pass`、`below_threshold=0`。两条检索路径
+（SQLite portable 全表扫描 与 PG pgvector + tsvector RRF）在这份语料上给出同一结论。
+
+⚠️ **已知抖动**：同一语料、同一配置的**连续两次 CI** 之间有 1 题结论翻转（`passed_cases` 15 → 16，
+引用命中率随之 0.7143 → 0.7619；`recall@5` 两次都稳定在 0.8571）。对 0.5 的引用阈值余量充足，
+但 `recall@5` 距 0.8 只有约两题余量（18/21 = 0.8571；17/21 = 0.8095 仍过，16/21 = 0.762 即失败）。
+若日后出现与 `recall@5` 相关的偶发红，先查这 1 题的排序不确定性，而不要直接调阈值。
+
+CI 自本次起以 `--gate-mode block` 运行。
 
 `scripts/_*.py`（如 `_diag_citation.py`、`_diff_golden.py`、`_run_tests.py`）是内部诊断脚本，
 **不是生产入口**，不参与部署；`scripts/check_suite_completeness.py` 与 `scripts/check_run_log.py` 是一对护栏，分工互补：
