@@ -8,6 +8,29 @@
 
 > 这是可本地运行的工程化演示，不宣称已经完成生产部署。生产环境仍需要真实身份提供商、托管 PostgreSQL、对象存储、异步任务和基础设施安全策略。
 
+## 简历亮点（Engineering Highlights）
+
+> 不是 demo 玩具：这是带**可量化质量门禁 + 可验证架构决策 + 真实迁移历史**的安全型 RAG 系统。下面每条都对应仓库里的真实 commit，可直接作为简历 bullet。
+
+**1. 把阻塞 DB 调用移出事件循环** — [`d2339ef`](https://github.com/j77156057-art/docmind-it-assistant/commit/d2339ef)
+将 80 个 `async def` 路由 handler 改为 `def`，让阻塞的 SQLAlchemy 调用落到 anyio 默认 40 线程 worker 池，避免阻塞整个事件循环。一次改 80 处，全程由单向 pytest 门禁（**232 passed / 4 skipped**，34 个测试模块）兜底，零回归。
+
+**2. 诊断并锁定真正的吞吐瓶颈（决策 C）** — [`fd32aa3`](https://github.com/j77156057-art/docmind-it-assistant/commit/fd32aa3) + [`a54c20c`](https://github.com/j77156057-art/docmind-it-assistant/commit/a54c20c) + [`263d588`](https://github.com/j77156057-art/docmind-it-assistant/commit/263d588)
+没有凭感觉调参：用结构化慢日志 + 并发有界性测试证明 **anyio 默认 40 线程 > PostgreSQL 连接池 15（5+10）**，故连接池才是真瓶颈；单调线程数在池不变时零收益。配套 `scripts/analyze_slow_logs.py` 把"池饱和 vs 慢 SQL"判据固化（详见 `docs/proposal_async_handler_def_ify.md` §9.1）。
+
+**3. 可量化的发布质量门禁** — [`5126e19`](https://github.com/j77156057-art/docmind-it-assistant/commit/5126e19) + [`25564c7`](https://github.com/j77156057-art/docmind-it-assistant/commit/25564c7) + [`2217f54`](https://github.com/j77156057-art/docmind-it-assistant/commit/2217f54)
+42 题黄金集复用**生产检索路径**（非另写 SQL）量化 recall@k / 引用命中率 / 拒答正确率，CI 以 `--gate-mode block` 强制设门。修掉词法重排器 IDF 缺陷后，本仓库 CI 通过题数 **16/21 → 20/21**，引用命中率 **0.7143 → 0.8571**。
+
+**4. 安全：把"一身二职"的盐拆成三把密钥** — [`4d61e4c`](https://github.com/j77156057-art/docmind-it-assistant/commit/4d61e4c) + [`de32022`](https://github.com/j77156057-art/docmind-it-assistant/commit/de32022)
+原 `IT_AUTH_SUBJECT_SALT` 同时派生主体哈希与凭证密文，轮换会同时废掉两者。拆为 `IT_AUTH_SUBJECT_SALT` / `IT_AUTH_SESSION_SECRET` / `IT_PROVIDER_CREDENTIAL_KEY` 三把独立可轮换密钥，并附 `scripts/rotate_provider_credentials.py`；`query.question` 与文档正文按 `IT_QUERY_FIELD_KEY` 做字段级 Fernet 加密落库。
+
+**5. 20 个可升降级 Alembic 迁移 + 真实 PG 验证**
+从 `20260920_0001` 到 `20260923_0020`，覆盖混合检索（pgvector）、ACL、知识治理、保留期、字段加密等。曾修掉只在 CI 真实 PostgreSQL 下才暴露的迁移 bug（[`ca9db6f`](https://github.com/j77156057-art/docmind-it-assistant/commit/ca9db6f)：0019 列 `Boolean(nullable=)` 非法参数）。
+
+**6. 两套 CI 护栏：防止"发绿但没真跑"**
+- `scripts/check_suite_completeness.py`：collect-only 断言每个 `tests/test_*.py` 至少贡献 1 例（管"该跑的没跑"）；
+- `scripts/check_run_log.py`：扫描运行日志的 `fatal exception` / `access violation` / `Segmentation fault`（管"崩了还发绿"）。
+
 ## 界面预览
 
 | 查询工作台 | 管理控制台 |
