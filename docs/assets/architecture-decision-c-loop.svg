@@ -1,0 +1,40 @@
+<svg viewBox="0 0 680 472" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>决策 C 诊断闭环：慢日志到连接池调参</title>
+  <desc>运行时慢日志经 analyze_slow_logs.py 区分连接池饱和与慢 SQL，据此决定调 PG 连接池而非线程数。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <text class="th" x="40" y="32" font-size="14" font-weight="500" fill="#2C2C2A">决策 C 诊断闭环：慢日志到连接池调参</text>
+  <text class="ts" x="40" y="52" font-size="12" fill="#5F5E5A">先看证据再调参：慢日志区分池饱和与慢 SQL</text>
+
+  <rect x="220" y="60" width="240" height="56" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="340" y="82" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">运行时慢日志</text>
+  <text x="340" y="102" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#5F5E5A">slow_request · slow_db_query</text>
+
+  <rect x="220" y="150" width="240" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="340" y="172" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">analyze_slow_logs.py</text>
+
+  <polygon points="340,224 440,260 340,296 240,260" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
+  <text x="340" y="256" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#2C2C2A">池饱和</text>
+  <text x="340" y="274" text-anchor="middle" dominant-baseline="central" font-size="13" font-weight="500" fill="#2C2C2A">or 慢 SQL</text>
+
+  <rect x="40" y="320" width="220" height="44" rx="8" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+  <text x="150" y="342" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">连接池饱和 → 调池尺寸</text>
+
+  <rect x="420" y="320" width="220" height="44" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+  <text x="530" y="342" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">慢 SQL → 修查询/索引</text>
+
+  <rect x="120" y="404" width="440" height="48" rx="8" fill="#FCEBEB" stroke="#A32D2D" stroke-width="0.5"/>
+  <text x="340" y="424" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#501313">约束链：anyio 40 线程 &gt; PG 池 15(5+10) ⇒ 池是真瓶颈</text>
+  <text x="340" y="442" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#501313">单调 anyio 线程在池不变时零收益</text>
+
+  <line x1="340" y1="116" x2="340" y2="148" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="340" y1="194" x2="340" y2="222" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <polyline points="240,260 180,260 180,342 258,342" fill="none" stroke="#BA7517" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <polyline points="440,260 500,260 500,342 422,342" fill="none" stroke="#3B6D11" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="120" y="250" font-size="12" fill="#BA7517">slow_request + 5xx</text>
+  <text x="560" y="250" font-size="12" fill="#3B6D11">slow_db_query</text>
+</svg>

@@ -1,0 +1,46 @@
+<svg viewBox="0 0 680 484" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>评测路径复用生产检索路径</title>
+  <desc>生产查询与黄金题集评测都调用同一个 HybridRetriever 生产检索内核，而非为评测另写 SQL。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <text class="th" x="40" y="32" font-size="14" font-weight="500" fill="#2C2C2A">评测路径复用生产检索路径</text>
+  <text class="ts" x="40" y="52" font-size="12" fill="#5F5E5A">单一检索内核：评测直接调用生产 HybridRetriever，不另写 SQL</text>
+
+  <rect x="60" y="64" width="200" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+  <text x="160" y="86" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">生产流量 · 用户查询</text>
+
+  <rect x="420" y="64" width="200" height="44" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+  <text x="520" y="86" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">黄金题集 · 42 题</text>
+
+  <rect x="60" y="148" width="200" height="44" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="160" y="170" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">查询服务 /api/query</text>
+
+  <rect x="420" y="148" width="200" height="44" rx="8" fill="#F1EFE8" stroke="#5F5E5A" stroke-width="0.5"/>
+  <text x="520" y="170" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">评测门禁 harness</text>
+
+  <rect x="210" y="236" width="260" height="56" rx="10" fill="#FAEEDA" stroke="#BA7517" stroke-width="1.5"/>
+  <text x="340" y="256" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">HybridRetriever.retrieve()</text>
+  <text x="340" y="278" text-anchor="middle" dominant-baseline="central" font-size="12" fill="#633806">生产检索内核 · 评测复用</text>
+
+  <rect x="150" y="328" width="380" height="44" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+  <text x="340" y="350" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">BM25 全文 + pgvector 向量 · RRF 融合</text>
+
+  <rect x="230" y="392" width="220" height="44" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+  <text x="340" y="414" text-anchor="middle" dominant-baseline="central" font-size="14" font-weight="500" fill="#2C2C2A">PostgreSQL + pgvector</text>
+
+  <line x1="160" y1="110" x2="160" y2="146" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="520" y1="110" x2="520" y2="146" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="340" y1="294" x2="340" y2="326" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="340" y1="374" x2="340" y2="390" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <line x1="200" y1="194" x2="300" y2="236" stroke="#BA7517" stroke-width="0.5" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+  <line x1="480" y1="194" x2="380" y2="236" stroke="#BA7517" stroke-width="0.5" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+  <text x="244" y="214" font-size="12" fill="#BA7517">复用</text>
+  <text x="436" y="214" font-size="12" fill="#BA7517">复用</text>
+
+  <text x="40" y="464" font-size="12" fill="#5F5E5A">指标描述的是真实生产系统，而非无人用的影子 SQL —— 评测体系最常见的失败方式。</text>
+</svg>
