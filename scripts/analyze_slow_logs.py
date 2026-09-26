@@ -72,10 +72,20 @@ def _pct(values: list[float], p: float) -> float:
     return round(values[idx], 2)
 
 
-def _load(paths: list[str], since: datetime | None) -> list[dict]:
+def _load(paths: list[str], since: datetime | None) -> tuple[list[dict], dict]:
+    """Return (filtered_rows, meta).
+
+    meta carries scan statistics so the caller can explain an empty result:
+      files   - number of log files matched & opened
+      scanned - number of JSON records parsed
+      min_ts  - earliest parsed timestamp (UTC-aware), or None
+      max_ts  - latest parsed timestamp (UTC-aware), or None
+    """
     rows: list[dict] = []
+    meta: dict = {"files": 0, "scanned": 0, "min_ts": None, "max_ts": None}
     for p in paths:
         for fn in glob.glob(p):
+            meta["files"] += 1
             try:
                 with open(fn, "r", encoding="utf-8", errors="replace") as fh:
                     for line in fh:
@@ -86,18 +96,49 @@ def _load(paths: list[str], since: datetime | None) -> list[dict]:
                             rec = json.loads(line)
                         except json.JSONDecodeError:
                             continue
+                        meta["scanned"] += 1
                         ts = rec.get("timestamp")
-                        if since is not None and ts:
+                        dt = None
+                        if ts:
                             try:
                                 dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                             except ValueError:
                                 dt = None
-                            if dt and dt < since:
-                                continue
+                        if dt is not None:
+                            if meta["min_ts"] is None or dt < meta["min_ts"]:
+                                meta["min_ts"] = dt
+                            if meta["max_ts"] is None or dt > meta["max_ts"]:
+                                meta["max_ts"] = dt
+                        if since is not None and dt is not None and dt < since:
+                            continue
                         rows.append(rec)
             except OSError as e:
                 print(f"  warn: cannot read {fn}: {e}", file=sys.stderr)
-    return rows
+    return rows, meta
+
+
+def _fmt(dt: datetime | None) -> str:
+    if dt is None:
+        return "n/a"
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _report_empty(meta: dict, since: datetime | None, paths: list[str]) -> None:
+    """Explain why no rows were produced instead of a bare 'no match'."""
+    if meta["files"] == 0:
+        print("no log files matched the given paths (check paths / glob):")
+        for p in paths:
+            print(f"  {p}")
+        return
+    if since is None:
+        print(f"no parseable log rows in {meta['files']} file(s) "
+              f"({meta['scanned']} rows scanned). Check log format / paths.")
+        return
+    print("no log rows matched the time window.")
+    print(f"  已扫描 {meta['scanned']} 行（来自 {meta['files']} 个文件）")
+    print(f"  日志时间跨度: {_fmt(meta['min_ts'])} → {_fmt(meta['max_ts'])}")
+    print(f"  --since 要求 ≥ {_fmt(since)}")
+    print("  -> 放宽 --since（如 --since 30d）或确认存在新鲜日志。")
 
 
 def main() -> None:
@@ -112,9 +153,9 @@ def main() -> None:
     since = _parse_since(args.since) if args.since else None
     if args.paths == [DEFAULT_GLOB]:
         args.paths = [str(REPO_ROOT / DEFAULT_GLOB)]
-    rows = _load(args.paths, since)
+    rows, meta = _load(args.paths, since)
     if not rows:
-        print("no log rows matched (check paths / --since).")
+        _report_empty(meta, since, args.paths)
         return
 
     by_event: dict[str, list[dict]] = defaultdict(list)
