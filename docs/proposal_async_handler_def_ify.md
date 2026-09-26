@@ -238,3 +238,11 @@ FastAPI 对 `def`（同步）路由 handler 会经 `starlette.concurrency.run_in
 - 同文件的 `SqlitePoolShapeTests` 在无 PG 时也运行，固定「sqlite 分支不向 `create_engine` 传 `pool_size`/`max_overflow`、得到 `NullPool`」这一事实（§二 的结构性依据），防止它悄悄失效。
 - 据此 `PROJECT_STATUS.md` 的「并发能力：未验证」已改写为「**池的有界性**已在 CI 上验证，**容量**仍未验证」——测出的 rps/延迟是单进程 + `TestClient` + 极小数据的数字，不可当容量用。
 
+### 七、慢日志聚合工具（2026-09-27 新增）
+
+把 §四 的「读慢日志、按 event 过滤、看三件事」落成一个**开箱即用的分析器**：`scripts/analyze_slow_logs.py`。喂入 `data/logs/*.err.log`（或 `--since 1h` 看最近一小时），它聚合 `slow_db_query` / `slow_request` / `slow_admin_request` 的事件数 + `duration_ms` 分位，按路径列出 `slow_request` 分布，并直接给出决策建议（慢 SQL 看 `slow_db_query`、池饱和看 `slow_request` + `pool_timeout`/`TimeoutError`/5xx、都不是则默认够用）。
+
+- 用法：`python scripts/analyze_slow_logs.py` / `--since 1h` / 指定文件 / `--slow-db-ms` / `--slow-request-ms`。
+- 已在历史日志（`data/logs/*.err.log`，2026-09-23）上实跑验证：解析正常，`--since` 相对/绝对时间过滤均生效；该批日志含 6 条 `slow_admin_request`（均在 `/api/admin/model-config`，p50≈2738ms），但**无 `slow_db_query`、无 5xx、无 pool-timeout** —— 属模型运行时延迟，非 DB 连接池饱和，与 §四 判据一致（池饱和必须伴随 `TimeoutError`/5xx）。
+- 这是"观察慢日志再决定"的落地工具；容量结论仍需在真 PG + 真实流量下跑出来再喂给它。
+
