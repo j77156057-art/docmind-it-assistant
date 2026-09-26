@@ -40,6 +40,9 @@ from pathlib import Path
 
 SLOW_EVENTS = ("slow_db_query", "slow_request", "slow_admin_request")
 DEFAULT_GLOB = "data/logs/*.err.log"
+# Resolve the default log glob against the repo root (two levels up from this script) so the
+# tool works regardless of the caller's current working directory.
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _parse_since(spec: str) -> datetime | None:
@@ -107,6 +110,8 @@ def main() -> None:
     args = ap.parse_args()
 
     since = _parse_since(args.since) if args.since else None
+    if args.paths == [DEFAULT_GLOB]:
+        args.paths = [str(REPO_ROOT / DEFAULT_GLOB)]
     rows = _load(args.paths, since)
     if not rows:
         print("no log rows matched (check paths / --since).")
