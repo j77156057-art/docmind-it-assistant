@@ -1,6 +1,6 @@
-fastapi==0.141.1
+fastapi==0.142.2
 pydantic==2.13.5
-SQLAlchemy==2.0.54
+SQLAlchemy==2.1.1
 alembic==1.20.0
 psycopg[binary]==3.3.6
 pgvector==0.5.0
@@ -10,7 +10,7 @@ reportlab==5.0.1
 openpyxl==3.1.5
 python-pptx==1.0.2
 python-multipart==0.0.32
-PyJWT[crypto]==2.14.0
-cryptography==50.0.1
+PyJWT[crypto]==2.15.1
+cryptography==50.0.2
 httpx==0.28.1
-uvicorn==0.53.0
+uvicorn==0.54.0
