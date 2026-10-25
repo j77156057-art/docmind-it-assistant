@@ -10,6 +10,6 @@
 # including a second HTTP stack). See docs/isolation-boundary.md before adding it to a
 # deployment that does not run the worker.
 -r requirements.txt
-langgraph==1.2.11
-langgraph-checkpoint-sqlite==3.1.1
-langgraph-checkpoint-postgres==3.1.2
+langgraph==1.2.16
+langgraph-checkpoint-sqlite==3.1.2
+langgraph-checkpoint-postgres==3.2.0
