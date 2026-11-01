@@ -8,4 +8,4 @@ psycopg[binary]==3.3.6
 # `unittest discover` only collects the former, so 24 pytest-style tests (field encryption,
 # rate limiting, reranking) silently never ran locally or in CI. pytest collects both, so it
 # is now the single declared runner everywhere: CI, README and PROJECT_STATUS.
-pytest==9.1.1
+pytest==9.2.0
