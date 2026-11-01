@@ -86,7 +86,7 @@ jobs:
       # case (a burst that exhausted the pool shows up as 500s and a saturated peak).
       - name: Upload pool concurrency report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pool-concurrency-report
           path: pool_concurrency_report.json
@@ -153,7 +153,7 @@ jobs:
         run: python -B scripts/run_golden_eval.py --embedding hash --gate-mode block --out golden_report.json
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: golden-eval-report
           path: golden_report.json
