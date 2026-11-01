@@ -1,5 +1,5 @@
 {
-  "description": "DocMind 检索式黄金题库（重建版）。两套语料各约 21 题，共 42 题，锚定真实章节。每题 expected_document_key 对应导入时的 source_key；expected_heading 为真实章节标题子串（门禁用 `in` 匹配）。文档路径相对各自仓库根目录，不再写死绝对路径：根的解析顺序为 --repo-root KEY=PATH → 环境变量 IT_GOLDEN_ROOT_KEY（KEY 为大写、非字母数字换下划线）→ 与本仓库同级的同名目录（本机即 D:/WorkBuddy/<key>）。根不存在时该 repo 整组跳过并记进报告，而不是静默算出 0 分。",
+  "description": "DocMind 检索式黄金题库（重建版）。两套语料各约 21 题，共 42 题，锚定真实章节。每题 expected_document_key 对应导入时的 source_key；expected_heading 为真实章节标题子串（门禁用 `in` 匹配）。文档路径相对各自仓库根目录，不再写死绝对路径：根的解析顺序为 --repo-root KEY=PATH → 环境变量 IT_GOLDEN_ROOT_KEY（KEY 为大写、非字母数字换下划线）→ 与本仓库同级的同名目录（例如 <repo-parent>/<key>）。根不存在时该 repo 整组跳过并记进报告，而不是静默算出 0 分。",
   "repos": [
     {
       "name": "rag-agent",

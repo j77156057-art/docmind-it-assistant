@@ -8,9 +8,9 @@
 
 > 这是可本地运行的工程化演示，不宣称已经完成生产部署。生产环境仍需要真实身份提供商、托管 PostgreSQL、对象存储、异步任务和基础设施安全策略。
 
-## 简历亮点（Engineering Highlights）
+## 项目亮点（Engineering Highlights）
 
-> 不是 demo 玩具：这是带**可量化质量门禁 + 可验证架构决策 + 真实迁移历史**的安全型 RAG 系统。下面每条都对应仓库里的真实 commit，可直接作为简历 bullet。
+> 这是带**可量化质量门禁 + 可验证架构决策 + 真实迁移历史**的安全型 RAG 系统。下面每条都对应仓库里的真实 commit，可作为项目核心亮点。
 
 **1. 把阻塞 DB 调用移出事件循环** — [`d2339ef`](https://github.com/j77156057-art/docmind-it-assistant/commit/d2339ef)
 将 80 个 `async def` 路由 handler 改为 `def`，让阻塞的 SQLAlchemy 调用落到 anyio 默认 40 线程 worker 池，避免阻塞整个事件循环。一次改 80 处，全程由单向 pytest 门禁（**232 passed / 4 skipped**，34 个测试模块）兜底，零回归。

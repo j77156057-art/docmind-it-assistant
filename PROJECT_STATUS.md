@@ -108,13 +108,13 @@ SQL 延迟分位、超 `IT_SLOW_DB_MS` 阈值的语句数）写入 CI artifact `
 
 ### 黄金集语料的可移植性，与「发绿但没测量到任何东西」的修复
 
-`golden/retrieval_golden_set.json` 原先用**绝对路径**（`D:/WorkBuddy/...`）引用两套语料。在 CI 的
+`golden/retrieval_golden_set.json` 原先用**绝对路径**（`<repo-parent>/...`）引用两套语料。在 CI 的
 Linux checkout 里这些路径全部不存在 → 语料为空 → 每题检索为空 → `recall@5` 与引用命中率恒 `0.000`
 → 两库都只是 `warn`，而 `warn` 不阻断 → **`golden-eval` 这个 job 从未真正设门**，却一直显示绿。
 这是与下文 `check_run_log.py` 同类的另一个实例：**发绿不等于真的跑了**——而且这次连「跑」都没有发生。
 
 现已改为**仓库相对路径 + 逻辑根**，由新增的 `scripts/golden_paths.py` 解析，优先级为
-`--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录（本机即 `D:/WorkBuddy/<key>`）。
+`--repo-root <key>=<path>` → `IT_GOLDEN_ROOT_<KEY>` → 与本仓库同级的同名目录（例如 `<repo-parent>/<key>`）。
 前两者是**显式且权威的**：指到非目录即判定「根不存在」，**不回落**到同级目录——静默换一份语料去测，
 比直接跳过更危险。根不存在时该 repo 整组跳过，并在报告里留下 `skipped` 与「找过哪些位置」。
 

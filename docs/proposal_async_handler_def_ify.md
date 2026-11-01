@@ -226,7 +226,7 @@ FastAPI 对 `def`（同步）路由 handler 会经 `starlette.concurrency.run_in
 
 ### 五、证据留存
 
-探针脚本与原始输出在 **`D:/Temp/dm_probe/`**（`probe_c.py` 压测矩阵、`probe_c2.py` 单变量控制实验、`probe_c.out` / `probe_c2.out`），**不在仓库内**，工作树保持干净。本节所有数字均来自这两个脚本的实跑。
+探针脚本与原始输出在 **`<local-temp>/dm_probe/`**（`probe_c.py` 压测矩阵、`probe_c2.py` 单变量控制实验、`probe_c.out` / `probe_c2.out`），**不在仓库内**，工作树保持干净。本节所有数字均来自这两个脚本的实跑。
 
 ### 六、已落地：池侧观测的自动化回归（2026-09-23，`tests/test_connection_pool.py`）
 

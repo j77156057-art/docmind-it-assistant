@@ -1,7 +1,7 @@
 """Resolve the golden set's repository roots and document paths.
 
 The golden set (``golden/retrieval_golden_set.json``) spans two repositories and used to store
-absolute ``D:/WorkBuddy/...`` document paths. That made the CI run measure an *empty* corpus: every
+absolute ``<repo-parent>/...`` document paths. That made the CI run measure an *empty* corpus: every
 document was "missing", every metric came out 0.000, and because the gate mode is ``warn`` the job
 still finished green — a gate that could not fail and a number that meant nothing.
 
@@ -11,7 +11,7 @@ This module makes the corpus portable and makes absence explicit. Each repo entr
 1. ``--repo-root <key>=<path>`` on the command line,
 2. the environment variable ``IT_GOLDEN_ROOT_<KEY>`` (KEY uppercased, non-alphanumerics → ``_``),
 3. a directory named after the key sitting next to this repository — on the development machine
-   that is ``D:/WorkBuddy/<key>``.
+   that is ``<repo-parent>/<key>``.
 
 The first two are *explicit* and therefore authoritative: if they name a path that is not a
 directory, the repo is reported as not found rather than falling back — silently measuring a

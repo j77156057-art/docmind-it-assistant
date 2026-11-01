@@ -28,7 +28,7 @@ OUT = REPO / "tmp_test_ascii.txt"
 env = dict(os.environ)
 env["PYTHONPATH"] = str(REPO)
 env["PYTHONIOENCODING"] = "utf-8"
-# The WorkBuddy sandbox injects proxy vars that break outbound HTTPS.
+# The dev sandbox injects proxy vars that break outbound HTTPS.
 for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
     env.pop(var, None)
 
